@@ -98,22 +98,20 @@ yourself if you want them gone (it never runs them — the CodeGraph CLI may be 
 
 ## Brand-new machine
 
-This is a **private** repo, so `raw.githubusercontent.com` needs auth — use `gh` (after
-`gh auth login`):
+One self-contained file — `curl | bash` it (review it first if you like; it self-extracts to
+`~/.agent-primer` and runs the installer):
 
 ```bash
-# clone + install (simplest):
-gh repo clone itsarvinddev/agent-primer ~/.agent-primer-src \
-  && ~/.agent-primer-src/install.sh --global
+# wire every agent, every project:
+curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --global
 
-# or one-liner via the single self-contained file (gh streams it, private-safe):
-gh api -H "Accept: application/vnd.github.raw" \
-  repos/itsarvinddev/agent-primer/contents/agent-primer.sh | bash -s -- --global
+# or just one repo:
+curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --project /path/to/repo
 ```
 
-If you later make the repo public, the classic curl one-liner also works:
+Prefer not to pipe into a shell? Clone and run the installer directly:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --global
+gh repo clone itsarvinddev/agent-primer ~/.agent-primer-src && ~/.agent-primer-src/install.sh --global
 ```
 
 ## How each agent is wired
