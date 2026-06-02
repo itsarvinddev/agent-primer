@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: shellcheck install.sh uninstall.sh make-portable.sh codegraph-session-check.sh tests/smoke.sh
+
+      - name: parse (bash -n)
+        run: |
+          for f in install.sh uninstall.sh make-portable.sh codegraph-session-check.sh tests/smoke.sh; do
+            bash -n "$f"
+          done
+
+      - name: smoke tests
+        run: bash tests/smoke.sh
+
+      - name: bundle drift gate (agent-primer.sh must equal make-portable.sh output)
+        run: |
+          ./make-portable.sh
+          git diff --exit-code -- agent-primer.sh \
+            || { echo "::error::agent-primer.sh is stale — run ./make-portable.sh and commit"; exit 1; }

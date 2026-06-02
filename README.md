@@ -1,33 +1,41 @@
-# codegraph-bootstrap
+# agent-primer
 
-Make **every AI coding agent** check [CodeGraph](https://github.com/colbymchenry/codegraph) at the
-start of each session — install it if missing, build the index if absent, `codegraph sync` if stale
-— **before** doing substantive work. Drop it into any project, or install once globally for all
-projects.
+**Prime every AI coding agent at session start.** One install equips your coding agents — **Claude
+Code, Codex, Cursor, Gemini CLI, opencode, Antigravity, Kimi Code, Qoder** (and any agent that reads
+`AGENTS.md`) — with a curated, growing set of enhancements *before* they do substantive work. Drop it
+into any project, or install once globally for all projects.
 
-Covers: **Claude Code, Codex, Cursor, Gemini CLI, opencode, Antigravity, Kimi Code, Qoder** (and any
-other agent that reads `AGENTS.md`).
+It installs **three policies** into the same instruction files, so every agent gets all of them:
+
+- **CodeGraph session-startup rule** (`codegraph-policy.md`) — install / index / sync before work; backed by a `SessionStart` hook.
+- **Karpathy coding guidelines** (`karpathy-policy.md`) — think before coding, simplicity first, surgical changes, goal-driven execution. Policy-only (no hook).
+- **Superpowers** (`superpowers-policy.md`) — bootstraps the [obra/superpowers](https://github.com/obra/superpowers) skills plugin per agent + carries its TDD / systematic / simplicity / evidence methodology. Policy-only (no hook).
 
 ## What's in here
 
 | File | Role |
 |---|---|
 | `codegraph-session-check.sh` | The hook. Read-only, always `exit 0`. Detects CLI/index/freshness and emits a directive. `--format text\|json\|cursor`. |
-| `codegraph-policy.md` | The rule. The canonical session-startup policy, copied into each agent's instruction file. |
-| `install.sh` | Wires the script + policy + hooks into agents. `--global` or `--project`. Idempotent. |
-| `codegraph-bootstrap.sh` | **Single self-contained file** (the other three inlined). Carry/curl this to a new machine. |
-| `make-portable.sh` | Regenerates `codegraph-bootstrap.sh` after you edit the kit. |
-| `docs/design.md` | Design notes + the cross-agent research this is built on. |
+| `codegraph-policy.md` | Policy #1 — the CodeGraph session-startup rule, copied into each agent's instruction file. |
+| `karpathy-policy.md` | Policy #2 — the Karpathy coding guidelines (behavioral; no hook), copied alongside policy #1. |
+| `superpowers-policy.md` | Policy #3 — bootstraps the obra/superpowers plugin + carries its methodology (behavioral; no hook). |
+| `install.sh` | Wires the hook script + all three policies into agents. `--global`/`--project`, `--agents`, `--dry-run`, `--version`. Idempotent; refuses to touch unparseable configs; writes atomically. |
+| `uninstall.sh` | Cleanly reverses an install (same flags). Idempotent and safe to run when nothing is installed. |
+| `agent-primer.sh` | **Single self-contained file** — the hook script, the three policies, and install + uninstall inlined. Carry/curl to a new machine (`bash agent-primer.sh --uninstall` removes). |
+| `make-portable.sh` | Regenerates `agent-primer.sh` after you edit the kit. |
+| `tests/smoke.sh` | Install/uninstall verification (run by CI). |
 
 ## How it works
 
-Two pieces are wired into each agent's config:
+These pieces are wired into each agent's config:
 
-1. **The rule** (`codegraph-policy.md`) — a markdown doc each agent auto-loads into context every
-   session (via `CLAUDE.md` / `AGENTS.md` / `.cursor/rules` / a Kimi skill / …). It states the
-   MUST-do behavior + exact commands.
-2. **The hook** — a `SessionStart` entry that auto-runs `codegraph-session-check.sh` the instant a
-   session starts:
+1. **The policies** — three markdown docs each agent auto-loads into context every session (via
+   `CLAUDE.md` / `AGENTS.md` / `.cursor/rules` / a Kimi skill / …): `codegraph-policy.md` (the
+   CodeGraph session-startup rule — MUST-do behavior + exact commands), `karpathy-policy.md`
+   (the Karpathy coding guidelines), and `superpowers-policy.md` (the Superpowers methodology +
+   per-agent plugin-install bootstrap).
+2. **The hook** (CodeGraph rule only) — a `SessionStart` entry that auto-runs `codegraph-session-check.sh`
+   the instant a session starts:
 
 ```
 session starts → hook runs codegraph-session-check.sh →
@@ -66,6 +74,21 @@ immediately.) Install the CLI itself with:
 curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh && codegraph install
 ```
 
+## Uninstall
+
+```bash
+./uninstall.sh --global                 # remove from your user-level configs
+./uninstall.sh --project /path/to/repo   # remove from one repo
+```
+
+Mirrors `install.sh`'s flags (`--agents`, `--dry-run`). It strips the policy blocks, removes the
+SessionStart hook entries, deletes the rule/skill files, and removes the kit dir — idempotent, and
+it never touches a config it can't parse. Via the self-contained file: `bash agent-primer.sh --uninstall --global`.
+
+It removes **agent-primer's wiring only** — the tools the policies bootstrap (the CodeGraph CLI, the
+Superpowers plugin/skills) are left in place, and uninstall prints the exact commands to remove those
+yourself if you want them gone (it never runs them — the CodeGraph CLI may be one you use elsewhere).
+
 ## Brand-new machine
 
 This is a **private** repo, so `raw.githubusercontent.com` needs auth — use `gh` (after
@@ -73,17 +96,17 @@ This is a **private** repo, so `raw.githubusercontent.com` needs auth — use `g
 
 ```bash
 # clone + install (simplest):
-gh repo clone itsarvinddev/codegraph-bootstrap ~/.codegraph-bootstrap-src \
-  && ~/.codegraph-bootstrap-src/install.sh --global
+gh repo clone itsarvinddev/agent-primer ~/.agent-primer-src \
+  && ~/.agent-primer-src/install.sh --global
 
 # or one-liner via the single self-contained file (gh streams it, private-safe):
 gh api -H "Accept: application/vnd.github.raw" \
-  repos/itsarvinddev/codegraph-bootstrap/contents/codegraph-bootstrap.sh | bash -s -- --global
+  repos/itsarvinddev/agent-primer/contents/agent-primer.sh | bash -s -- --global
 ```
 
 If you later make the repo public, the classic curl one-liner also works:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/itsarvinddev/codegraph-bootstrap/main/codegraph-bootstrap.sh | bash -s -- --global
+curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --global
 ```
 
 ## How each agent is wired
@@ -113,4 +136,9 @@ Claude Code / Gemini / Cursor, best-effort elsewhere — but the agent still rea
   `~/.codex/AGENTS.md`, `~/.config/opencode/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.kimi-code/skills/`).
   Cursor global rules are UI-only (the global hook covers it); Qoder has no global hook — wire it
   per-project.
-- After editing any kit file, run `./make-portable.sh` to refresh `codegraph-bootstrap.sh`.
+- After editing any kit file, run `./make-portable.sh` to refresh `agent-primer.sh`.
+- Verify with `tests/smoke.sh` (install/uninstall, idempotency, dry-run, malformed-config safety, no-python3 fallback). CI runs `shellcheck` + `bash -n` + the smoke suite + a bundle-drift gate on every push.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

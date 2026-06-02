@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # codegraph-session-check.sh — CodeGraph session-startup check for AI coding agents.
 #
-# Part of the portable "codegraph-bootstrap" kit. Wired as a SessionStart hook
+# Part of the portable "agent-primer" kit. Wired as a SessionStart hook
 # (Claude Code, Codex, Gemini, Antigravity, Kimi), a sessionStart hook (Cursor),
 # or invoked from a session.created plugin (opencode). Safe to run standalone.
 #
@@ -23,10 +23,13 @@ FORMAT="text"
 PROJECT_DIR=""
 
 while [ "$#" -gt 0 ]; do
+  # NOTE: `shift 2` fails and shifts nothing on bash 3.2 when the flag is the last
+  # arg → infinite loop. As a SessionStart hook that would hang the agent's startup,
+  # so use a guarded double-shift instead.
   case "$1" in
-    --format) FORMAT="${2:-text}"; shift 2 ;;
+    --format) FORMAT="${2:-text}"; shift; [ "$#" -gt 0 ] && shift ;;
     --format=*) FORMAT="${1#*=}"; shift ;;
-    --project) PROJECT_DIR="${2:-}"; shift 2 ;;
+    --project) PROJECT_DIR="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --project=*) PROJECT_DIR="${1#*=}"; shift ;;
     *) shift ;;
   esac

@@ -1,0 +1,8 @@
+# CodeGraph local index (machine-local SQLite DB; rebuild with `codegraph init -i`)
+.codegraph/
+
+# macOS
+.DS_Store
+
+# AI agent files
+/docs/*
