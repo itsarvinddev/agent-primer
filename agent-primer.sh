@@ -645,11 +645,11 @@ fi
 if selected claude; then
   if [ "$SCOPE" = "project" ]; then SETTINGS="$ROOT/.claude/settings.json"; else SETTINGS="$HOME/.claude/settings.json"; fi
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then append_marked "$CLAUDE_RULE"   # global: ~/.claude/CLAUDE.md (auto-loaded)
-  else cat "$POLICY_SRC" | putfile "$CLAUDE_RULE"; fi                        # project: .claude/rules/*.md
+  else putfile "$CLAUDE_RULE" < "$POLICY_SRC"; fi                            # project: .claude/rules/*.md
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then append_marked "$CLAUDE_RULE" "$KARPATHY_SRC" "karpathy-guidelines"
-  else cat "$KARPATHY_SRC" | putfile "${CLAUDE_RULE%/*}/karpathy-guidelines.md"; fi
+  else putfile "${CLAUDE_RULE%/*}/karpathy-guidelines.md" < "$KARPATHY_SRC"; fi
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then append_marked "$CLAUDE_RULE" "$SUPERPOWERS_SRC" "superpowers"
-  else cat "$SUPERPOWERS_SRC" | putfile "${CLAUDE_RULE%/*}/superpowers.md"; fi
+  else putfile "${CLAUDE_RULE%/*}/superpowers.md" < "$SUPERPOWERS_SRC"; fi
   json_hook "$SETTINGS" claude "bash \"$SCRIPT_CLAUDE\" --format json"
 fi
 
@@ -749,11 +749,11 @@ JS
 fi
 
 if selected antigravity; then
-  [ -n "$ANTI_RULE" ] && cat "$POLICY_SRC" | putfile "$ANTI_RULE"   # project: .agents/rules/*.md
+  [ -n "$ANTI_RULE" ] && putfile "$ANTI_RULE" < "$POLICY_SRC"       # project: .agents/rules/*.md
   append_marked "$ANTI_INSTR"                                       # global: ~/.gemini/GEMINI.md (shared)
-  [ -n "$ANTI_RULE" ] && cat "$KARPATHY_SRC" | putfile "${ANTI_RULE%/*}/karpathy-guidelines.md"
+  [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/karpathy-guidelines.md" < "$KARPATHY_SRC"
   append_marked "$ANTI_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
-  [ -n "$ANTI_RULE" ] && cat "$SUPERPOWERS_SRC" | putfile "${ANTI_RULE%/*}/superpowers.md"
+  [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/superpowers.md" < "$SUPERPOWERS_SRC"
   append_marked "$ANTI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then AH="$ROOT/.agents/hooks.json"; else AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"; fi
   json_hook "$AH" antigravity "bash \"$SCRIPT_OTHER\" --format text"
