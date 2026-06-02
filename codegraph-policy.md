@@ -1,0 +1,87 @@
+# CodeGraph — Session-Startup Rule (MUST follow, every session, every agent)
+
+**This is a hard rule for every AI coding agent — Claude Code, Codex, Cursor, Gemini CLI,
+opencode, Antigravity, Kimi Code, Qoder, and any other.** At the **start of every session**, before
+doing substantive work on a task, ensure CodeGraph is installed, this project is indexed, and the
+index is fresh. CodeGraph is a tree-sitter knowledge graph of every symbol, edge, and file; its
+`codegraph_*` MCP tools answer structural questions (definitions, callers/callees, impact, traces)
+that grep cannot, in sub-millisecond reads. A stale or missing index silently degrades every
+structural answer you give — so this check is not optional.
+
+In repos that wire the bundled `SessionStart` hook, `codegraph-session-check.sh` runs this check for
+you and injects the result at session start — **read that injected `[CodeGraph]` block and act on
+it**. If no such block appears (e.g. Qoder, or any agent without a startup hook), run the steps
+below yourself before starting the task.
+
+---
+
+## The decision tree (do this first)
+
+1. **Is the `codegraph` CLI installed?** — `command -v codegraph` (or `codegraph --version`).
+   - **No →** install and set it up (see *Installing from scratch* below), then continue.
+2. **Is THIS project indexed?** — does `.codegraph/` exist at the repo root, and does
+   `codegraph status` succeed?
+   - **No →** `codegraph init -i` (builds the initial graph).
+3. **Is the index fresh?** — read `codegraph status`.
+   - If it reports pending / changed / stale files, or looks behind the working tree →
+     `codegraph sync` **before** relying on any `codegraph_*` result.
+   - If it says the index is up to date → proceed; prefer `codegraph_*` tools for structural work.
+
+Only after the index is present and fresh should you start the user's task.
+
+---
+
+## Installing from scratch (when the CLI is missing)
+
+You are authorized to install and set CodeGraph up automatically. **Announce each command before
+running it** (it touches the user's machine), then run, in order:
+
+| Step | Command | Purpose |
+|---|---|---|
+| 1. Install CLI (macOS/Linux) | `curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh \| sh` | Self-contained binary; no Node required |
+| 1. Install CLI (any OS, alt) | `npm i -g @colbymchenry/codegraph` | npm alternative |
+| 1. Install CLI (Windows) | `irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 \| iex` | PowerShell |
+| 2. Register MCP into agents | `codegraph install` | Adds the `codegraph` MCP server to Claude Code / Cursor / Codex / opencode / Gemini / etc. config |
+| 3. Build the index | `codegraph init -i` | Creates `.codegraph/` and indexes the repo |
+| 4. Keep it fresh later | `codegraph sync` | Incremental update since last index |
+
+---
+
+## The restart reality — be honest about it
+
+Registering the MCP server (`codegraph install`) makes the `codegraph_*` **MCP tools** available
+**only after the agent/IDE restarts** — and **you cannot restart yourself or your host app**. So:
+
+- Do **everything that does not need a restart** right now: install the CLI, `codegraph install`,
+  `codegraph init -i`, `codegraph sync`.
+- **Use the `codegraph` CLI via your shell/Bash immediately** for the current task — it works
+  without the MCP tools (`codegraph query`, `codegraph context <task>`, `codegraph callers`,
+  `codegraph callees`, `codegraph impact`, `codegraph files`, `codegraph status`).
+- Then **explicitly ask the user to restart** the agent/IDE (Claude Code: restart or `/mcp`
+  reconnect; Cursor: Reload Window; Codex/Gemini/opencode/Kimi: restart the CLI; Antigravity/Qoder:
+  restart the IDE) so the `codegraph_*` MCP tools load, and resume the task afterward.
+- **Never claim you restarted yourself.** Never fabricate that the MCP tools are available when
+  they are not — verify, or use the CLI.
+
+---
+
+## Don'ts
+
+- **Don't skip the check** because the task "seems small." A stale index gives wrong structural
+  answers regardless of task size.
+- **Don't silently `curl | sh`** without announcing it — installing software touches the user's
+  machine; say what you're running first.
+- **Don't run `codegraph uninit` / `uninstall`** unless the user explicitly asks.
+- **Don't re-query `codegraph_*` immediately after editing a file** in the same turn — the watcher
+  debounces ~500 ms behind writes; `codegraph sync` or wait a beat first.
+- **Don't trust grep over a fresh index** for structural questions — prefer `codegraph_*`.
+
+---
+
+## Precedence
+
+Where this project's auto-generated CodeGraph block (between `<!-- CODEGRAPH_START -->` and
+`<!-- CODEGRAPH_END -->` in `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/codegraph.mdc`) says to
+*ask the user before running `codegraph init -i`*, **this rule supersedes it**: at session start you
+may initialize/sync automatically (announcing commands). That managed block is regenerated by
+`codegraph install`, so this rule lives in a separate, unmanaged file on purpose.
