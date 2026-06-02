@@ -54,32 +54,84 @@ immediately, and asks you to restart only so the `codegraph_*` MCP tools load.
 
 ## Install
 
-**This machine — every project at once (recommended):**
+Whether a person runs it or an AI agent does it for you, agent-primer installs the same way: get the
+repo (one `curl`, or a clone), then run `install.sh`. Pick your path.
+
+### For humans
+
+#### Option A — let your AI agent do it
+
+Already using an AI coding agent (Claude Code, Cursor, Codex, …)? Paste this and let it install
+agent-primer for you (it just follows the **For LLM agents** steps below):
+
+> Install **agent-primer** on my machine from https://github.com/itsarvinddev/agent-primer — run
+> `curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --global`,
+> then tell me what it wired and that I should restart you so the hooks + `codegraph_*` MCP tools load.
+
+#### Option B — manual setup
+
+One self-contained file — `curl | bash` it (review it first if you like; it self-extracts to
+`~/.agent-primer` and runs the installer):
+
 ```bash
-./install.sh --global
+# every agent, every project (recommended):
+curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --global
+
+# or just one repo (committed, shareable with a team):
+curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --project /path/to/repo
 ```
 
-**One project (committed, shared with a team):**
+Prefer not to pipe into a shell? Clone and run the installer directly:
 ```bash
-./install.sh --project /path/to/repo
+gh repo clone itsarvinddev/agent-primer ~/.agent-primer-src && ~/.agent-primer-src/install.sh --global
 ```
 
-**Preview / subset / legacy every-session mode:**
-```bash
-./install.sh --global --dry-run
-./install.sh --project --agents claude,cursor,codex
-./install.sh --global --always          # legacy: print `codegraph status` at every session
-```
+Flags: `--global` / `--project [DIR]` · `--agents claude,cursor,codex` (subset) · `--dry-run` ·
+`--always` (legacy every-session `codegraph status` readout; default is quiet after first-run setup).
 
-By default the SessionStart hook is **quiet after first-run setup** (once per project) — it nudges
-only until the project is initialized, then stays silent. Pass `--always` to restore the previous
-every-session status readout.
-
-Then restart your agent/IDE so hooks + MCP tools load. (The `codegraph` CLI works in your shell
-immediately.) Install the CLI itself with:
+Then **restart your agent/IDE** so hooks + MCP tools load (the `codegraph` CLI works in your shell
+right away). Install the CodeGraph CLI itself with:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh && codegraph install
 ```
+
+### For LLM agents
+
+You're an AI coding agent installing agent-primer for the user. **Announce each command before
+running it** (it touches their machine), then:
+
+#### Step-by-step
+
+1. **Install agent-primer** — clone and run the installer (`--global` = all the user's projects, or
+   `--project <dir>` for one repo):
+   ```bash
+   gh repo clone itsarvinddev/agent-primer ~/.agent-primer-src && ~/.agent-primer-src/install.sh --global
+   ```
+   Single-file alternative: `curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --global`
+2. **Ensure the CodeGraph CLI is present** (`command -v codegraph`); if missing, install it so the
+   hook can index projects:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh && codegraph install
+   ```
+3. **Read and follow the policies** now wired into your instruction file(s) (`CLAUDE.md` /
+   `AGENTS.md` / `.cursor/rules` / Kimi skill): the CodeGraph session-startup rule, the Karpathy
+   coding guidelines, and the Superpowers bootstrap.
+4. **Ask the user to restart** the agent/IDE so the SessionStart hook + `codegraph_*` MCP tools load.
+   You cannot restart yourself — never claim you did.
+
+#### Verification
+
+Confirm it took, and report what you find (don't assume):
+```bash
+ls ~/.agent-primer/                          # global kit dir: codegraph-session-check.sh + the 3 *-policy.md
+grep -c ':start -->' ~/.claude/CLAUDE.md     # global Claude: expect 3 policy blocks (adjust path per agent)
+bash ~/.agent-primer/codegraph-session-check.sh --project "$PWD"   # silent if this project is indexed; nudges if not
+```
+- All three policy blocks (`codegraph-session-startup`, `karpathy-guidelines`, `superpowers`) present
+  in your instruction file? `~/.agent-primer/` populated?
+- After a restart, are the `codegraph_*` MCP tools available?
+- Once-mode sanity: a project with no `.codegraph/` shows the `[CodeGraph]` setup nudge at session
+  start; once `codegraph init -i` has run, later sessions are silent.
 
 ## Uninstall
 
@@ -95,24 +147,6 @@ it never touches a config it can't parse. Via the self-contained file: `bash age
 It removes **agent-primer's wiring only** — the tools the policies bootstrap (the CodeGraph CLI, the
 Superpowers plugin/skills) are left in place, and uninstall prints the exact commands to remove those
 yourself if you want them gone (it never runs them — the CodeGraph CLI may be one you use elsewhere).
-
-## Brand-new machine
-
-One self-contained file — `curl | bash` it (review it first if you like; it self-extracts to
-`~/.agent-primer` and runs the installer):
-
-```bash
-# wire every agent, every project:
-curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --global
-
-# or just one repo:
-curl -fsSL https://raw.githubusercontent.com/itsarvinddev/agent-primer/main/agent-primer.sh | bash -s -- --project /path/to/repo
-```
-
-Prefer not to pipe into a shell? Clone and run the installer directly:
-```bash
-gh repo clone itsarvinddev/agent-primer ~/.agent-primer-src && ~/.agent-primer-src/install.sh --global
-```
 
 ## How each agent is wired
 
