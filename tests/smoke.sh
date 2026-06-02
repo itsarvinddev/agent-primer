@@ -26,6 +26,32 @@ chk "unknown --agents exits 2"            '"$INSTALL" --agents bogus --project "
 chk "trailing --agents does not hang"     'guard bash "$INSTALL" --project "$(mk)" --agents >/dev/null 2>&1; [ $? -ne 142 ]'
 chk "trailing --format hook does not hang" 'guard bash "$ROOT/codegraph-session-check.sh" --format >/dev/null 2>&1; [ $? -ne 142 ]'
 
+echo "== once-mode hook (default) + --always opt-out =="
+OM="$(mk)"; mkdir -p "$OM/.codegraph"
+if command -v codegraph >/dev/null 2>&1; then
+  chk "once-mode: silent when project is set up"  '[ -z "$(guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM" 2>/dev/null)" ]'
+  chk "--always: prints index-present block"      'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM" --always 2>/dev/null | grep -q "Index present"'
+  OM2="$(mk)"
+  chk "not set up: still nudges codegraph init"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -q "codegraph init -i"'
+else
+  echo "  skip branch-2/3 hook tests (no codegraph CLI on PATH)"
+fi
+chk "trailing --always does not hang"             'guard bash "$ROOT/codegraph-session-check.sh" --project "$OM" --always >/dev/null 2>&1; [ $? -ne 142 ]'
+
+echo "== install threads --always into hook commands =="
+APD="$(mk)"; guard bash "$INSTALL" --project "$APD" >/dev/null 2>&1
+chk "default install: no --always (claude)"       '! grep -q -- "--always" "$APD/.claude/settings.json"'
+chk "default install: no --always (opencode)"     '! grep -q -- "--always" "$APD/.opencode/plugins/codegraph-session-check.js"'
+APA="$(mk)"; guard bash "$INSTALL" --project "$APA" --always >/dev/null 2>&1
+chk "--always: flag in claude settings"           'grep -q -- "--always" "$APA/.claude/settings.json"'
+chk "--always: flag in codex hooks"               'grep -q -- "--always" "$APA/.codex/hooks.json"'
+chk "--always: flag in gemini settings"           'grep -q -- "--always" "$APA/.gemini/settings.json"'
+chk "--always: flag in cursor hooks"              'grep -q -- "--always" "$APA/.cursor/hooks.json"'
+chk "--always: flag in opencode plugin"           'grep -q -- "--always" "$APA/.opencode/plugins/codegraph-session-check.js"'
+chk "--always: claude settings still valid JSON"  'vjson "$APA/.claude/settings.json"'
+HKA="$(mk)"; guard env HOME="$HKA" bash "$INSTALL" --global --always --agents kimi >/dev/null 2>&1
+chk "--always: flag in kimi config.toml (global)" 'grep -q -- "--always" "$HKA/.kimi-code/config.toml"'
+
 echo "== project install =="
 P="$(mk)"; guard bash "$INSTALL" --project "$P" >/dev/null 2>&1
 for m in codegraph-session-startup karpathy-guidelines superpowers; do

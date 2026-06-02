@@ -6,21 +6,31 @@
 # or invoked from a session.created plugin (opencode). Safe to run standalone.
 #
 # It NEVER mutates anything and ALWAYS exits 0 — it only inspects the index and
-# emits a directive telling the agent what to do (install / init / sync / proceed).
+# emits a directive telling the agent what to do (install / init / proceed).
 # The agent performs any install itself, per codegraph-policy.md, announcing commands.
 #
+# By DEFAULT it runs in "once per project" mode: it nudges every session UNTIL the
+# project is set up (CLI present + .codegraph/ at the project root), then goes SILENT
+# on later sessions (emits nothing; skips `codegraph status` for a fast no-op). Index
+# freshness after that is handled by CodeGraph's own file-watcher. Pass --always to
+# restore the legacy every-session behavior (print `codegraph status` + a reminder
+# even when the index is already present).
+#
 # Usage:
-#   codegraph-session-check.sh [--format text|json|cursor] [--project DIR]
+#   codegraph-session-check.sh [--format text|json|cursor] [--project DIR] [--always]
 #
 # Formats:
 #   text    plain stdout (default; Claude Code / Codex add SessionStart stdout to context)
 #   json    {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}
 #   cursor  {"additional_context":"…"}
+#
+# --always  every-session mode: branch 3 prints status as before (default: silent once set up)
 
 set -u
 
 FORMAT="text"
 PROJECT_DIR=""
+ALWAYS=0
 
 while [ "$#" -gt 0 ]; do
   # NOTE: `shift 2` fails and shifts nothing on bash 3.2 when the flag is the last
@@ -31,6 +41,7 @@ while [ "$#" -gt 0 ]; do
     --format=*) FORMAT="${1#*=}"; shift ;;
     --project) PROJECT_DIR="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --project=*) PROJECT_DIR="${1#*=}"; shift ;;
+    --always) ALWAYS=1; shift ;;
     *) shift ;;
   esac
 done
@@ -106,6 +117,14 @@ ${PROJECT_DIR}). Build the index before relying on CodeGraph:
   codegraph init -i
 If the codegraph_* MCP tools are missing afterwards, run \`codegraph install\` then ask
 the user to restart this agent/IDE."
+  exit 0
+fi
+
+# Branch 3: CLI present + .codegraph/ exists = this project is already set up.
+# DEFAULT (once-mode): stay SILENT and skip `codegraph status` entirely — a fast no-op.
+# Freshness is the file-watcher's job; re-announcing every session is just noise.
+# Pass --always to restore the legacy every-session status + reminder output.
+if [ "$ALWAYS" = 0 ]; then
   exit 0
 fi
 

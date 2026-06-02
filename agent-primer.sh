@@ -16,21 +16,31 @@ cat > "$DEST/codegraph-session-check.sh" <<'CG_EOF_SCRIPT'
 # or invoked from a session.created plugin (opencode). Safe to run standalone.
 #
 # It NEVER mutates anything and ALWAYS exits 0 — it only inspects the index and
-# emits a directive telling the agent what to do (install / init / sync / proceed).
+# emits a directive telling the agent what to do (install / init / proceed).
 # The agent performs any install itself, per codegraph-policy.md, announcing commands.
 #
+# By DEFAULT it runs in "once per project" mode: it nudges every session UNTIL the
+# project is set up (CLI present + .codegraph/ at the project root), then goes SILENT
+# on later sessions (emits nothing; skips `codegraph status` for a fast no-op). Index
+# freshness after that is handled by CodeGraph's own file-watcher. Pass --always to
+# restore the legacy every-session behavior (print `codegraph status` + a reminder
+# even when the index is already present).
+#
 # Usage:
-#   codegraph-session-check.sh [--format text|json|cursor] [--project DIR]
+#   codegraph-session-check.sh [--format text|json|cursor] [--project DIR] [--always]
 #
 # Formats:
 #   text    plain stdout (default; Claude Code / Codex add SessionStart stdout to context)
 #   json    {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}
 #   cursor  {"additional_context":"…"}
+#
+# --always  every-session mode: branch 3 prints status as before (default: silent once set up)
 
 set -u
 
 FORMAT="text"
 PROJECT_DIR=""
+ALWAYS=0
 
 while [ "$#" -gt 0 ]; do
   # NOTE: `shift 2` fails and shifts nothing on bash 3.2 when the flag is the last
@@ -41,6 +51,7 @@ while [ "$#" -gt 0 ]; do
     --format=*) FORMAT="${1#*=}"; shift ;;
     --project) PROJECT_DIR="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --project=*) PROJECT_DIR="${1#*=}"; shift ;;
+    --always) ALWAYS=1; shift ;;
     *) shift ;;
   esac
 done
@@ -119,6 +130,14 @@ the user to restart this agent/IDE."
   exit 0
 fi
 
+# Branch 3: CLI present + .codegraph/ exists = this project is already set up.
+# DEFAULT (once-mode): stay SILENT and skip `codegraph status` entirely — a fast no-op.
+# Freshness is the file-watcher's job; re-announcing every session is just noise.
+# Pass --always to restore the legacy every-session status + reminder output.
+if [ "$ALWAYS" = 0 ]; then
+  exit 0
+fi
+
 ESC="$(printf '\033')"
 STATUS_OUT="$(run_status | sed "s/${ESC}\[[0-9;]*m//g")"
 emit "[CodeGraph] Index present. \`codegraph status\`:
@@ -130,36 +149,48 @@ before relying on codegraph_* results. Prefer codegraph_* tools for structural q
 exit 0
 CG_EOF_SCRIPT
 cat > "$DEST/codegraph-policy.md" <<'CG_EOF_POLICY'
-# CodeGraph — Session-Startup Rule (MUST follow, every session, every agent)
+# CodeGraph — Session-Startup Rule (every agent; set up once per project, then trust it)
 
 **This is a hard rule for every AI coding agent — Claude Code, Codex, Cursor, Gemini CLI,
-opencode, Antigravity, Kimi Code, Qoder, and any other.** At the **start of every session**, before
-doing substantive work on a task, ensure CodeGraph is installed, this project is indexed, and the
-index is fresh. CodeGraph is a tree-sitter knowledge graph of every symbol, edge, and file; its
-`codegraph_*` MCP tools answer structural questions (definitions, callers/callees, impact, traces)
-that grep cannot, in sub-millisecond reads. A stale or missing index silently degrades every
-structural answer you give — so this check is not optional.
+opencode, Antigravity, Kimi Code, Qoder, and any other.** The **first time** you work in a project,
+before doing substantive work, ensure CodeGraph is installed and this project is indexed. CodeGraph
+is a tree-sitter knowledge graph of every symbol, edge, and file; its `codegraph_*` MCP tools answer
+structural questions (definitions, callers/callees, impact, traces) that grep cannot, in
+sub-millisecond reads. Once a project is indexed, CodeGraph's file-watcher keeps the index fresh
+automatically — so this is **one-time setup per project, not an every-session ceremony**.
 
 In repos that wire the bundled `SessionStart` hook, `codegraph-session-check.sh` runs this check for
-you and injects the result at session start — **read that injected `[CodeGraph]` block and act on
-it**. If no such block appears (e.g. Qoder, or any agent without a startup hook), run the steps
-below yourself before starting the task.
+you at session start. By default it runs in **once-per-project** mode: it injects a `[CodeGraph]`
+setup block **only while the project still needs setup** (no `codegraph` CLI, or no `.codegraph/`
+index yet); once the project is indexed it goes **silent**. So:
+
+- **A `[CodeGraph]` setup block IS present →** the project isn't set up yet; follow it (and the
+  decision tree below) before starting the task.
+- **No `[CodeGraph]` block appears (in a hook-wired repo) →** the project is **already set up — just
+  proceed**, and prefer `codegraph_*` tools. Do **not** re-run `codegraph init`/`status` "to be safe":
+  the file-watcher keeps the index fresh, and re-checking every session is the noise this mode removes.
+- **No startup hook at all (e.g. Qoder), or you're unsure one is wired →** run the one-time decision
+  tree below yourself; once `.codegraph/` exists, treat the project as set up and proceed thereafter.
+
+(Operators who want the legacy every-session `codegraph status` readout can install the hook with
+`--always`; it prints index status at the start of every session even after setup.)
 
 ---
 
-## The decision tree (do this first)
+## The one-time setup decision tree (first time you work in a project)
 
 1. **Is the `codegraph` CLI installed?** — `command -v codegraph` (or `codegraph --version`).
    - **No →** install and set it up (see *Installing from scratch* below), then continue.
 2. **Is THIS project indexed?** — does `.codegraph/` exist at the repo root, and does
    `codegraph status` succeed?
    - **No →** `codegraph init -i` (builds the initial graph).
-3. **Is the index fresh?** — read `codegraph status`.
-   - If it reports pending / changed / stale files, or looks behind the working tree →
-     `codegraph sync` **before** relying on any `codegraph_*` result.
-   - If it says the index is up to date → proceed; prefer `codegraph_*` tools for structural work.
+3. **Index freshness** — after the initial `init -i`, CodeGraph's file-watcher keeps the index in
+   sync with the working tree automatically; you do **not** need to run `codegraph status` / `sync`
+   at the start of every session. Only if you have a concrete reason to suspect drift (e.g. a large
+   external checkout or branch switch the watcher may have missed) run `codegraph status`, then
+   `codegraph sync` if it reports pending / changed / stale files, before relying on `codegraph_*`.
 
-Only after the index is present and fresh should you start the user's task.
+Once the index is present, start the user's task and prefer `codegraph_*` tools for structural work.
 
 ---
 
@@ -199,8 +230,9 @@ Registering the MCP server (`codegraph install`) makes the `codegraph_*` **MCP t
 
 ## Don'ts
 
-- **Don't skip the check** because the task "seems small." A stale index gives wrong structural
-  answers regardless of task size.
+- **Don't re-run the setup check once the project is already indexed.** A missing `[CodeGraph]` hook
+  block in a wired repo means "set up — proceed," not "re-check"; re-running `init`/`status` every
+  session is exactly the noise once-mode removes. Trust the file-watcher (or install with `--always`).
 - **Don't silently `curl | sh`** without announcing it — installing software touches the user's
   machine; say what you're running first.
 - **Don't run `codegraph uninit` / `uninstall`** unless the user explicitly asks.
@@ -402,6 +434,7 @@ TARGET=""
 AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
 DRYRUN=0
+ALWAYS=0   # 1 => thread --always into every wired hook command (legacy every-session mode)
 FAILED=0   # set to 1 by any failed write/merge; controls the final exit code
 
 usage() {
@@ -414,6 +447,7 @@ Usage:
   install.sh --global            wire into your user-level (~/) configs — applies to ALL projects
   install.sh ... --agents a,b    only these agents (comma-separated; default: all)
   install.sh ... --dry-run       show what would happen, write nothing
+  install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
   install.sh --version           print version and exit
   install.sh -h | --help         show this help
 
@@ -430,6 +464,7 @@ while [ "$#" -gt 0 ]; do
     --agents) AGENTS="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --agents=*) AGENTS="${1#*=}"; shift ;;
     --dry-run) DRYRUN=1; shift ;;
+    --always) ALWAYS=1; shift ;;
     --version) echo "agent-primer $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -624,6 +659,12 @@ with_policy_frontmatter() { # with_policy_frontmatter "<frontmatter>" [POLICY_FI
 
 selected() { case ",$AGENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 
+# Once-mode is the default. With --always, every wired hook command gets the flag so the
+# check stays verbose every session. The leading space lets us append it directly inside
+# the existing quoted command strings (empty => byte-identical to the default).
+HOOK_FLAGS=""
+[ "$ALWAYS" = 1 ] && HOOK_FLAGS=" --always"
+
 # --- place the kit -------------------------------------------------------------
 note "scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN"
 if [ "$DRYRUN" = 0 ]; then
@@ -650,7 +691,7 @@ if selected claude; then
   else putfile "${CLAUDE_RULE%/*}/karpathy-guidelines.md" < "$KARPATHY_SRC"; fi
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then append_marked "$CLAUDE_RULE" "$SUPERPOWERS_SRC" "superpowers"
   else putfile "${CLAUDE_RULE%/*}/superpowers.md" < "$SUPERPOWERS_SRC"; fi
-  json_hook "$SETTINGS" claude "bash \"$SCRIPT_CLAUDE\" --format json"
+  json_hook "$SETTINGS" claude "bash \"$SCRIPT_CLAUDE\" --format json$HOOK_FLAGS"
 fi
 
 if selected codex; then
@@ -658,7 +699,7 @@ if selected codex; then
   append_marked "$CODEX_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
   append_marked "$CODEX_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then CFILE="$ROOT/.codex/hooks.json"; else CFILE="$HOME/.codex/hooks.json"; fi
-  json_hook "$CFILE" codex "bash \"$SCRIPT_OTHER\" --format text"
+  json_hook "$CFILE" codex "bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"
 fi
 
 if selected cursor; then
@@ -679,7 +720,7 @@ alwaysApply: true
   else
     note "Cursor global rules are UI-only (User Rules); the global hook covers Cursor. Add the rule via Cursor Settings > Rules if you want the doc."
   fi
-  json_hook "$HFILE" cursor "bash \"$SCRIPT_OTHER\" --format cursor"
+  json_hook "$HFILE" cursor "bash \"$SCRIPT_OTHER\" --format cursor$HOOK_FLAGS"
 fi
 
 if selected gemini; then
@@ -687,7 +728,7 @@ if selected gemini; then
   append_marked "$GEMINI_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
   append_marked "$GEMINI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then GS="$ROOT/.gemini/settings.json"; else GS="$HOME/.gemini/settings.json"; fi
-  json_hook "$GS" gemini "bash \"$SCRIPT_OTHER\" --format json"
+  json_hook "$GS" gemini "bash \"$SCRIPT_OTHER\" --format json$HOOK_FLAGS"
   # Make Gemini also read AGENTS.md (so the shared policy applies).
   if [ "$HAVE_PY" = 1 ] && [ "$DRYRUN" = 0 ]; then
     if CG_FILE="$GS" "$PY" - <<'PY'
@@ -735,7 +776,7 @@ const SCRIPT = ${SREF_JS};
 export const CodegraphSessionCheck = async ({ \$, directory }) => ({
   "session.created": async () => {
     try {
-      const out = await \$\`bash \${SCRIPT} --format text --project \${directory}\`.quiet().nothrow();
+      const out = await \$\`bash \${SCRIPT} --format text$HOOK_FLAGS --project \${directory}\`.quiet().nothrow();
       const text = (out.stdout || "").toString().trim();
       if (text) console.log(text);
     } catch (_) { /* never block session start */ }
@@ -756,7 +797,7 @@ if selected antigravity; then
   [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/superpowers.md" < "$SUPERPOWERS_SRC"
   append_marked "$ANTI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then AH="$ROOT/.agents/hooks.json"; else AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"; fi
-  json_hook "$AH" antigravity "bash \"$SCRIPT_OTHER\" --format text"
+  json_hook "$AH" antigravity "bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"
 fi
 
 if selected kimi; then
@@ -782,7 +823,7 @@ whenToUse: At session start, and when planning or implementing non-trivial codin
   # written on --global only. A --project install writes the skill and prints the snippet,
   # never silently mutating your global config.
   KCONF="$HOME/.kimi-code/config.toml"
-  KCMD="bash \"$SCRIPT_OTHER\" --format text"   # quote the path so the shell command survives spaces in $HOME
+  KCMD="bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"   # quote the path so the shell command survives spaces in $HOME
   if [ "$SCOPE" = "global" ]; then
     if [ "$DRYRUN" = 1 ]; then note "would append Kimi SessionStart hook to $KCONF"
     elif grep -q "codegraph-session-check.sh" "$KCONF" 2>/dev/null; then note "Kimi SessionStart hook already in $KCONF"

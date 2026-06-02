@@ -15,7 +15,7 @@ It installs **three policies** into the same instruction files, so every agent g
 
 | File | Role |
 |---|---|
-| `codegraph-session-check.sh` | The hook. Read-only, always `exit 0`. Detects CLI/index/freshness and emits a directive. `--format text\|json\|cursor`. |
+| `codegraph-session-check.sh` | The hook. Read-only, always `exit 0`. **Once per project by default** — nudges until set up, then silent. `--format text\|json\|cursor`; `--always` keeps the every-session `codegraph status` readout. |
 | `codegraph-policy.md` | Policy #1 — the CodeGraph session-startup rule, copied into each agent's instruction file. |
 | `karpathy-policy.md` | Policy #2 — the Karpathy coding guidelines (behavioral; no hook), copied alongside policy #1. |
 | `superpowers-policy.md` | Policy #3 — bootstraps the obra/superpowers plugin + carries its methodology (behavioral; no hook). |
@@ -41,14 +41,16 @@ These pieces are wired into each agent's config:
 session starts → hook runs codegraph-session-check.sh →
   • no codegraph CLI    → "install it → codegraph install → restart"
   • no .codegraph/ dir  → "run codegraph init -i"
-  • index is stale      → "run codegraph sync"
-  • all good            → "proceed; prefer codegraph_* tools"
+  • project is set up   → (default) SILENT — already initialized, just proceed
+                          (install with --always to print `codegraph status` every session)
 → injected into the agent's context → the agent acts on it before your task
 ```
 
-The script is read-only and always exits 0 — it never blocks a session. The agent does any install
-itself (announcing commands), uses the `codegraph` CLI immediately, and asks you to restart only so
-the `codegraph_*` MCP tools load.
+The script is read-only and always exits 0 — it never blocks a session. **By default it's quiet once
+the project is set up** — it nudges only until `.codegraph/` exists, after which CodeGraph's
+file-watcher keeps the index fresh; pass `--always` at install time to keep the every-session status
+readout. The agent does any install itself (announcing commands), uses the `codegraph` CLI
+immediately, and asks you to restart only so the `codegraph_*` MCP tools load.
 
 ## Install
 
@@ -62,11 +64,16 @@ the `codegraph_*` MCP tools load.
 ./install.sh --project /path/to/repo
 ```
 
-**Preview / subset:**
+**Preview / subset / legacy every-session mode:**
 ```bash
 ./install.sh --global --dry-run
 ./install.sh --project --agents claude,cursor,codex
+./install.sh --global --always          # legacy: print `codegraph status` at every session
 ```
+
+By default the SessionStart hook is **quiet after first-run setup** (once per project) — it nudges
+only until the project is initialized, then stays silent. Pass `--always` to restore the previous
+every-session status readout.
 
 Then restart your agent/IDE so hooks + MCP tools load. (The `codegraph` CLI works in your shell
 immediately.) Install the CLI itself with:

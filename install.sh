@@ -33,6 +33,7 @@ TARGET=""
 AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
 DRYRUN=0
+ALWAYS=0   # 1 => thread --always into every wired hook command (legacy every-session mode)
 FAILED=0   # set to 1 by any failed write/merge; controls the final exit code
 
 usage() {
@@ -45,6 +46,7 @@ Usage:
   install.sh --global            wire into your user-level (~/) configs — applies to ALL projects
   install.sh ... --agents a,b    only these agents (comma-separated; default: all)
   install.sh ... --dry-run       show what would happen, write nothing
+  install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
   install.sh --version           print version and exit
   install.sh -h | --help         show this help
 
@@ -61,6 +63,7 @@ while [ "$#" -gt 0 ]; do
     --agents) AGENTS="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --agents=*) AGENTS="${1#*=}"; shift ;;
     --dry-run) DRYRUN=1; shift ;;
+    --always) ALWAYS=1; shift ;;
     --version) echo "agent-primer $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -255,6 +258,12 @@ with_policy_frontmatter() { # with_policy_frontmatter "<frontmatter>" [POLICY_FI
 
 selected() { case ",$AGENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 
+# Once-mode is the default. With --always, every wired hook command gets the flag so the
+# check stays verbose every session. The leading space lets us append it directly inside
+# the existing quoted command strings (empty => byte-identical to the default).
+HOOK_FLAGS=""
+[ "$ALWAYS" = 1 ] && HOOK_FLAGS=" --always"
+
 # --- place the kit -------------------------------------------------------------
 note "scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN"
 if [ "$DRYRUN" = 0 ]; then
@@ -281,7 +290,7 @@ if selected claude; then
   else putfile "${CLAUDE_RULE%/*}/karpathy-guidelines.md" < "$KARPATHY_SRC"; fi
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then append_marked "$CLAUDE_RULE" "$SUPERPOWERS_SRC" "superpowers"
   else putfile "${CLAUDE_RULE%/*}/superpowers.md" < "$SUPERPOWERS_SRC"; fi
-  json_hook "$SETTINGS" claude "bash \"$SCRIPT_CLAUDE\" --format json"
+  json_hook "$SETTINGS" claude "bash \"$SCRIPT_CLAUDE\" --format json$HOOK_FLAGS"
 fi
 
 if selected codex; then
@@ -289,7 +298,7 @@ if selected codex; then
   append_marked "$CODEX_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
   append_marked "$CODEX_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then CFILE="$ROOT/.codex/hooks.json"; else CFILE="$HOME/.codex/hooks.json"; fi
-  json_hook "$CFILE" codex "bash \"$SCRIPT_OTHER\" --format text"
+  json_hook "$CFILE" codex "bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"
 fi
 
 if selected cursor; then
@@ -310,7 +319,7 @@ alwaysApply: true
   else
     note "Cursor global rules are UI-only (User Rules); the global hook covers Cursor. Add the rule via Cursor Settings > Rules if you want the doc."
   fi
-  json_hook "$HFILE" cursor "bash \"$SCRIPT_OTHER\" --format cursor"
+  json_hook "$HFILE" cursor "bash \"$SCRIPT_OTHER\" --format cursor$HOOK_FLAGS"
 fi
 
 if selected gemini; then
@@ -318,7 +327,7 @@ if selected gemini; then
   append_marked "$GEMINI_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
   append_marked "$GEMINI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then GS="$ROOT/.gemini/settings.json"; else GS="$HOME/.gemini/settings.json"; fi
-  json_hook "$GS" gemini "bash \"$SCRIPT_OTHER\" --format json"
+  json_hook "$GS" gemini "bash \"$SCRIPT_OTHER\" --format json$HOOK_FLAGS"
   # Make Gemini also read AGENTS.md (so the shared policy applies).
   if [ "$HAVE_PY" = 1 ] && [ "$DRYRUN" = 0 ]; then
     if CG_FILE="$GS" "$PY" - <<'PY'
@@ -366,7 +375,7 @@ const SCRIPT = ${SREF_JS};
 export const CodegraphSessionCheck = async ({ \$, directory }) => ({
   "session.created": async () => {
     try {
-      const out = await \$\`bash \${SCRIPT} --format text --project \${directory}\`.quiet().nothrow();
+      const out = await \$\`bash \${SCRIPT} --format text$HOOK_FLAGS --project \${directory}\`.quiet().nothrow();
       const text = (out.stdout || "").toString().trim();
       if (text) console.log(text);
     } catch (_) { /* never block session start */ }
@@ -387,7 +396,7 @@ if selected antigravity; then
   [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/superpowers.md" < "$SUPERPOWERS_SRC"
   append_marked "$ANTI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then AH="$ROOT/.agents/hooks.json"; else AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"; fi
-  json_hook "$AH" antigravity "bash \"$SCRIPT_OTHER\" --format text"
+  json_hook "$AH" antigravity "bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"
 fi
 
 if selected kimi; then
@@ -413,7 +422,7 @@ whenToUse: At session start, and when planning or implementing non-trivial codin
   # written on --global only. A --project install writes the skill and prints the snippet,
   # never silently mutating your global config.
   KCONF="$HOME/.kimi-code/config.toml"
-  KCMD="bash \"$SCRIPT_OTHER\" --format text"   # quote the path so the shell command survives spaces in $HOME
+  KCMD="bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"   # quote the path so the shell command survives spaces in $HOME
   if [ "$SCOPE" = "global" ]; then
     if [ "$DRYRUN" = 1 ]; then note "would append Kimi SessionStart hook to $KCONF"
     elif grep -q "codegraph-session-check.sh" "$KCONF" 2>/dev/null; then note "Kimi SessionStart hook already in $KCONF"

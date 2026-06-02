@@ -1,33 +1,45 @@
-# CodeGraph — Session-Startup Rule (MUST follow, every session, every agent)
+# CodeGraph — Session-Startup Rule (every agent; set up once per project, then trust it)
 
 **This is a hard rule for every AI coding agent — Claude Code, Codex, Cursor, Gemini CLI,
-opencode, Antigravity, Kimi Code, Qoder, and any other.** At the **start of every session**, before
-doing substantive work on a task, ensure CodeGraph is installed, this project is indexed, and the
-index is fresh. CodeGraph is a tree-sitter knowledge graph of every symbol, edge, and file; its
-`codegraph_*` MCP tools answer structural questions (definitions, callers/callees, impact, traces)
-that grep cannot, in sub-millisecond reads. A stale or missing index silently degrades every
-structural answer you give — so this check is not optional.
+opencode, Antigravity, Kimi Code, Qoder, and any other.** The **first time** you work in a project,
+before doing substantive work, ensure CodeGraph is installed and this project is indexed. CodeGraph
+is a tree-sitter knowledge graph of every symbol, edge, and file; its `codegraph_*` MCP tools answer
+structural questions (definitions, callers/callees, impact, traces) that grep cannot, in
+sub-millisecond reads. Once a project is indexed, CodeGraph's file-watcher keeps the index fresh
+automatically — so this is **one-time setup per project, not an every-session ceremony**.
 
 In repos that wire the bundled `SessionStart` hook, `codegraph-session-check.sh` runs this check for
-you and injects the result at session start — **read that injected `[CodeGraph]` block and act on
-it**. If no such block appears (e.g. Qoder, or any agent without a startup hook), run the steps
-below yourself before starting the task.
+you at session start. By default it runs in **once-per-project** mode: it injects a `[CodeGraph]`
+setup block **only while the project still needs setup** (no `codegraph` CLI, or no `.codegraph/`
+index yet); once the project is indexed it goes **silent**. So:
+
+- **A `[CodeGraph]` setup block IS present →** the project isn't set up yet; follow it (and the
+  decision tree below) before starting the task.
+- **No `[CodeGraph]` block appears (in a hook-wired repo) →** the project is **already set up — just
+  proceed**, and prefer `codegraph_*` tools. Do **not** re-run `codegraph init`/`status` "to be safe":
+  the file-watcher keeps the index fresh, and re-checking every session is the noise this mode removes.
+- **No startup hook at all (e.g. Qoder), or you're unsure one is wired →** run the one-time decision
+  tree below yourself; once `.codegraph/` exists, treat the project as set up and proceed thereafter.
+
+(Operators who want the legacy every-session `codegraph status` readout can install the hook with
+`--always`; it prints index status at the start of every session even after setup.)
 
 ---
 
-## The decision tree (do this first)
+## The one-time setup decision tree (first time you work in a project)
 
 1. **Is the `codegraph` CLI installed?** — `command -v codegraph` (or `codegraph --version`).
    - **No →** install and set it up (see *Installing from scratch* below), then continue.
 2. **Is THIS project indexed?** — does `.codegraph/` exist at the repo root, and does
    `codegraph status` succeed?
    - **No →** `codegraph init -i` (builds the initial graph).
-3. **Is the index fresh?** — read `codegraph status`.
-   - If it reports pending / changed / stale files, or looks behind the working tree →
-     `codegraph sync` **before** relying on any `codegraph_*` result.
-   - If it says the index is up to date → proceed; prefer `codegraph_*` tools for structural work.
+3. **Index freshness** — after the initial `init -i`, CodeGraph's file-watcher keeps the index in
+   sync with the working tree automatically; you do **not** need to run `codegraph status` / `sync`
+   at the start of every session. Only if you have a concrete reason to suspect drift (e.g. a large
+   external checkout or branch switch the watcher may have missed) run `codegraph status`, then
+   `codegraph sync` if it reports pending / changed / stale files, before relying on `codegraph_*`.
 
-Only after the index is present and fresh should you start the user's task.
+Once the index is present, start the user's task and prefer `codegraph_*` tools for structural work.
 
 ---
 
@@ -67,8 +79,9 @@ Registering the MCP server (`codegraph install`) makes the `codegraph_*` **MCP t
 
 ## Don'ts
 
-- **Don't skip the check** because the task "seems small." A stale index gives wrong structural
-  answers regardless of task size.
+- **Don't re-run the setup check once the project is already indexed.** A missing `[CodeGraph]` hook
+  block in a wired repo means "set up — proceed," not "re-check"; re-running `init`/`status` every
+  session is exactly the noise once-mode removes. Trust the file-watcher (or install with `--always`).
 - **Don't silently `curl | sh`** without announcing it — installing software touches the user's
   machine; say what you're running first.
 - **Don't run `codegraph uninit` / `uninstall`** unless the user explicitly asks.
