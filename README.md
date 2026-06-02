@@ -8,7 +8,7 @@ into any project, or install once globally for all projects.
 It installs **three policies** into the same instruction files, so every agent gets all of them:
 
 - **CodeGraph session-startup rule** (`codegraph-policy.md`) — install / index / sync before work; backed by a `SessionStart` hook.
-- **Karpathy coding guidelines** (`karpathy-policy.md`) — think before coding, simplicity first, surgical changes, goal-driven execution. Policy-only (no hook).
+- **Karpathy coding guidelines** (`karpathy-policy.md`) — think before coding, simplicity first, surgical changes, goal-driven execution; from [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills). Policy-only (no hook).
 - **Superpowers** (`superpowers-policy.md`) — bootstraps the [obra/superpowers](https://github.com/obra/superpowers) skills plugin per agent + carries its TDD / systematic / simplicity / evidence methodology. Policy-only (no hook).
 
 ## What's in here
@@ -138,6 +138,14 @@ Claude Code / Gemini / Cursor, best-effort elsewhere — but the agent still rea
   per-project.
 - After editing any kit file, run `./make-portable.sh` to refresh `agent-primer.sh`.
 - Verify with `tests/smoke.sh` (install/uninstall, idempotency, dry-run, malformed-config safety, no-python3 fallback). CI runs `shellcheck` + `bash -n` + the smoke suite + a bundle-drift gate on every push.
+
+## Upstream projects
+
+agent-primer **wires these projects into your agents — it doesn't replace them.** Go read/star the originals:
+
+- **[colbymchenry/codegraph](https://github.com/colbymchenry/codegraph)** — the CodeGraph CLI + MCP server: the tree-sitter code-intelligence index this kit's session-startup rule checks for.
+- **[multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)** — the Karpathy coding guidelines this kit distills (a republish of [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills), derived from [Andrej Karpathy's notes](https://x.com/karpathy/status/2015883857489522876)).
+- **[obra/superpowers](https://github.com/obra/superpowers)** — the Superpowers skills plugin / methodology this kit bootstraps per agent.
 
 ## License
 
