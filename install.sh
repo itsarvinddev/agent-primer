@@ -12,6 +12,7 @@
 #   ./install.sh --project [DIR]     wire into a project (default: current dir)
 #   ./install.sh --global            wire into your user-level (~/) configs — applies to ALL projects
 #   ./install.sh ... --agents a,b    only these agents (default: all)
+#   ./install.sh ... --with a,b      also install opt-in bundles (mcp, tools, rules, skills, agent-extensions; or 'all')
 #   ./install.sh ... --dry-run       show what would happen, write nothing
 #
 # Agents: claude, codex, cursor, gemini, opencode, antigravity, kimi, qoder
@@ -26,12 +27,19 @@ SCRIPT_SRC="$SELF_DIR/codegraph-session-check.sh"
 POLICY_SRC="$SELF_DIR/codegraph-policy.md"
 KARPATHY_SRC="$SELF_DIR/karpathy-policy.md"
 SUPERPOWERS_SRC="$SELF_DIR/superpowers-policy.md"
+MCP_SRC="$SELF_DIR/mcp-policy.md"
+TOOLS_SRC="$SELF_DIR/tools-policy.md"
+RULES_SRC="$SELF_DIR/rules-policy.md"
+SKILLS_SRC="$SELF_DIR/skills-policy.md"
+EXT_SRC="$SELF_DIR/agent-extensions-policy.md"
 
 VERSION="0.1.0"
 SCOPE=""
 TARGET=""
 AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
+WITH=""                                   # opt-in extra bundles (comma list); the core 3 always install
+KNOWN_BUNDLES="mcp tools rules skills agent-extensions"
 DRYRUN=0
 ALWAYS=0   # 1 => thread --always into every wired hook command (legacy every-session mode)
 FAILED=0   # set to 1 by any failed write/merge; controls the final exit code
@@ -47,6 +55,7 @@ Usage:
   install.sh ... --agents a,b    only these agents (comma-separated; default: all)
   install.sh ... --dry-run       show what would happen, write nothing
   install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
+  install.sh ... --with a,b      also install opt-in bundles: mcp, tools, rules, skills, agent-extensions (or 'all')
   install.sh --version           print version and exit
   install.sh -h | --help         show this help
 
@@ -64,6 +73,8 @@ while [ "$#" -gt 0 ]; do
     --agents=*) AGENTS="${1#*=}"; shift ;;
     --dry-run) DRYRUN=1; shift ;;
     --always) ALWAYS=1; shift ;;
+    --with) WITH="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
+    --with=*) WITH="${1#*=}"; shift ;;
     --version) echo "agent-primer $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -81,10 +92,26 @@ for _a in $AGENTS; do case " $KNOWN_AGENTS " in *" $_a "*) ;; *) _bad="$_bad $_a
 IFS="$_oldifs"
 [ -n "$_bad" ] && { echo "error: unknown agent(s):$_bad" >&2; echo "known agents: $KNOWN_AGENTS" >&2; exit 2; }
 
+# Opt-in bundles (--with): default install = the core 3 policies; --with adds extras; --with all = every bundle.
+WITH="$(printf '%s' "$WITH" | tr -d '[:space:]')"
+[ "$WITH" = "all" ] && WITH="$(printf '%s' "$KNOWN_BUNDLES" | tr ' ' ',')"
+policy_on() { case ",$WITH," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
+if [ -n "$WITH" ]; then
+  _badb=""; _oldifs="$IFS"; IFS=','
+  for _b in $WITH; do case " $KNOWN_BUNDLES " in *" $_b "*) ;; *) _badb="$_badb $_b" ;; esac; done
+  IFS="$_oldifs"
+  [ -n "$_badb" ] && { echo "error: unknown bundle(s):$_badb" >&2; echo "known bundles: $KNOWN_BUNDLES (or 'all')" >&2; exit 2; }
+fi
+
 [ -f "$SCRIPT_SRC" ] || { echo "error: $SCRIPT_SRC not found" >&2; exit 2; }
 [ -f "$POLICY_SRC" ] || { echo "error: $POLICY_SRC not found" >&2; exit 2; }
 [ -f "$KARPATHY_SRC" ] || { echo "error: $KARPATHY_SRC not found" >&2; exit 2; }
 [ -f "$SUPERPOWERS_SRC" ] || { echo "error: $SUPERPOWERS_SRC not found" >&2; exit 2; }
+policy_on mcp              && { [ -f "$MCP_SRC" ]   || { echo "error: $MCP_SRC not found" >&2; exit 2; }; }
+policy_on tools            && { [ -f "$TOOLS_SRC" ] || { echo "error: $TOOLS_SRC not found" >&2; exit 2; }; }
+policy_on rules            && { [ -f "$RULES_SRC" ] || { echo "error: $RULES_SRC not found" >&2; exit 2; }; }
+policy_on skills           && { [ -f "$SKILLS_SRC" ] || { echo "error: $SKILLS_SRC not found" >&2; exit 2; }; }
+policy_on agent-extensions && { [ -f "$EXT_SRC" ]   || { echo "error: $EXT_SRC not found" >&2; exit 2; }; }
 
 if [ "$SCOPE" = "project" ]; then
   TARGET="${TARGET:-$PWD}"
@@ -263,6 +290,49 @@ selected() { case ",$AGENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 # the existing quoted command strings (empty => byte-identical to the default).
 HOOK_FLAGS=""
 [ "$ALWAYS" = 1 ] && HOOK_FLAGS=" --always"
+
+# Opt-in policy bundles (--with). Each is a HOOKLESS markdown policy distributed into the
+# same instruction channels as the core 3, via place_policy. Registry rows: id|src|marker|desc.
+EXTRA_REGISTRY="
+mcp|$MCP_SRC|agent-primer-mcp|MCP servers — Context7 docs, GitHub, Playwright (complements CodeGraph)
+tools|$TOOLS_SRC|agent-primer-tools|Code tools — ast-grep + repomix; when to use each vs CodeGraph
+rules|$RULES_SRC|agent-primer-rules|Security + 12-Factor-Agents + commit/PR hygiene guardrails
+skills|$SKILLS_SRC|agent-primer-skills|Skill registries — Anthropic skills, skills.sh, VoltAgent
+agent-extensions|$EXT_SRC|agent-primer-extensions|Per-agent first-party plugins/skills/tools
+"
+
+# Distribute one hookless policy doc into a single agent's channel(s), honoring scope.
+# Mirrors the core per-agent placement; opt-in bundles use generic frontmatter from $desc.
+place_policy() { # place_policy AGENT SRC MARKER DESC
+  local agent="$1" src="$2" marker="$3" desc="$4" kdir
+  case "$agent" in
+    claude)
+      if [ "$CLAUDE_RULE_MODE" = "append" ]; then append_marked "$CLAUDE_RULE" "$src" "$marker"
+      else putfile "${CLAUDE_RULE%/*}/$marker.md" < "$src"; fi ;;
+    codex)    append_marked "$CODEX_INSTR" "$src" "$marker" ;;
+    opencode) append_marked "$OPENCODE_INSTR" "$src" "$marker" ;;
+    gemini)   append_marked "$GEMINI_INSTR" "$src" "$marker" ;;
+    cursor)
+      [ -n "$CURSOR_MDC" ] && with_policy_frontmatter "---
+description: $desc
+alwaysApply: true
+---" "$src" | putfile "${CURSOR_MDC%/*}/$marker.mdc" ;;
+    antigravity)
+      [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/$marker.md" < "$src"
+      append_marked "$ANTI_INSTR" "$src" "$marker" ;;
+    kimi)
+      if [ "$SCOPE" = "project" ]; then kdir="$ROOT/.kimi-code/skills/$marker/SKILL.md"; else kdir="$HOME/.kimi-code/skills/$marker/SKILL.md"; fi
+      with_policy_frontmatter "---
+name: $marker
+description: $desc
+whenToUse: When this bundle's tools/rules are relevant to the task.
+---" "$src" | putfile "$kdir" ;;
+    qoder)
+      [ -n "$QODER_RULE" ] || return 0
+      with_policy_frontmatter "<!-- Set this rule's mode to 'Always Apply' in Qoder. $desc -->" "$src" | putfile "${QODER_RULE%/*}/$marker.md"
+      append_marked "$QODER_INSTR" "$src" "$marker" ;;
+  esac
+}
 
 # --- place the kit -------------------------------------------------------------
 note "scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN"
@@ -452,6 +522,24 @@ if selected qoder; then
     note "Qoder has no SessionStart hook and no documented global rules dir — wire Qoder per-project (install.sh --project)."
   fi
 fi
+
+# --- opt-in bundles (--with) ----------------------------------------------------
+# Read the registry via a here-doc-fed `while read` (NOT `… | while read`): a here-doc
+# redirect keeps the loop in the CURRENT shell, so FAILED set by place_policy/append_marked
+# propagates to the exit code. Per selected bundle: copy its doc into the kit dir once, then
+# distribute it into each selected agent via place_policy.
+while IFS='|' read -r _bid _bsrc _bmarker _bdesc; do
+  [ -n "$_bid" ] || continue
+  policy_on "$_bid" || continue
+  if [ "$DRYRUN" = 0 ]; then
+    cp "$_bsrc" "$KIT_DEST/$(basename "$_bsrc")" 2>/dev/null || { FAILED=1; note "ERROR: failed to copy $(basename "$_bsrc") to $KIT_DEST"; }
+  fi
+  for _ag in claude codex cursor gemini opencode antigravity kimi qoder; do
+    selected "$_ag" && place_policy "$_ag" "$_bsrc" "$_bmarker" "$_bdesc"
+  done
+done <<REG
+$EXTRA_REGISTRY
+REG
 
 if [ "$FAILED" = 0 ]; then note "done."; else note "done — but some writes FAILED (see ERROR lines above)."; fi
 [ "$SCOPE" = "project" ] && note "Restart your agent/IDE so MCP + hooks load. CLI works immediately via Bash."

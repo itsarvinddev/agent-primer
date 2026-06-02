@@ -398,6 +398,156 @@ claim you restarted yourself**; ask the user to restart if they aren't available
 - **Don't fabricate install commands** — if an agent isn't listed, use the upstream README; don't invent one.
 - **Don't duplicate the Karpathy guidelines** — where they overlap (simplicity, evidence), follow either; Superpowers adds the test-first skill library on top.
 CG_EOF_SUPERPOWERS
+cat > "$DEST/mcp-policy.md" <<'CG_EOF_MCP'
+# MCP servers — recommended setup (opt-in bundle; complements CodeGraph)
+
+These Model Context Protocol servers give your agent capabilities CodeGraph (the structural code
+index) does not: up-to-date library docs, GitHub/repo data, and real browser automation. They
+**complement — never duplicate** — the CodeGraph index. Add only the ones the user needs.
+
+You are authorized to add these for the user. **Announce each command before running it** (it edits
+the agent's MCP config), and **verify the current command against the linked docs — never fabricate
+one**; MCP setup differs per agent and per server version.
+
+## The servers
+
+- **Context7** — version-correct library/framework docs injected into the prompt (stops stale-API
+  hallucinations). Official setup: `npx ctx7 setup` (add `--claude` / `--cursor` / `--opencode` to
+  target an agent). Manual/remote: server URL `https://mcp.context7.com/mcp`, or the
+  `@upstash/context7-mcp` package. Docs: https://github.com/upstash/context7
+- **GitHub** (official) — issues, PRs, repo + code search, commit history. Remote (recommended):
+  `https://api.githubcopilot.com/mcp/` (HTTP transport, OAuth) — e.g. Claude Code:
+  `claude mcp add --transport http github https://api.githubcopilot.com/mcp/`. Local: the
+  `ghcr.io/github/github-mcp-server` container. Docs: https://github.com/github/github-mcp-server
+- **Playwright** (Microsoft) — drive a real browser for UI/E2E testing & scraping via accessibility
+  snapshots. e.g. Claude Code: `claude mcp add playwright -- npx @playwright/mcp@latest`. Docs:
+  https://github.com/microsoft/playwright-mcp
+
+For other agents, use that agent's MCP config (Cursor `.cursor/mcp.json`, Codex `~/.codex/config.toml`
+`[mcp_servers]`, Gemini `.gemini/settings.json` `mcpServers`, opencode/Antigravity equivalents) — see
+each server's docs above. After adding a server, **restart the agent/IDE** so its tools load —
+**never claim you restarted yourself**.
+
+## When to use which
+- **CodeGraph** — *this repo's* structure: definitions, callers/callees, impact, traces.
+- **Context7** — external library/framework API questions.
+- **GitHub** — issues/PRs/cross-repo search & history.
+- **Playwright** — anything that needs a live browser.
+
+## Don'ts
+- Don't add servers that duplicate CodeGraph (it already covers structural code questions).
+- Don't paste tokens into configs in plaintext where the agent supports OAuth.
+- Don't enable a server you won't use — each adds tool-surface + latency.
+CG_EOF_MCP
+cat > "$DEST/tools-policy.md" <<'CG_EOF_TOOLS'
+# Code tools — ast-grep + repomix (opt-in bundle; companions to the CodeGraph CLI)
+
+Two CLI tools that make edits precise and context-gathering cheap. Install only what's missing
+(`command -v <tool>`), **announce the install command first**, and **verify it against the linked
+docs — don't fabricate**.
+
+## The tools
+- **ast-grep** (`ast-grep` / `sg`) — AST-aware structural search & rewrite across many languages;
+  ideal for safe codemods ("rewrite this call pattern everywhere") that regex can't do reliably.
+  Install: `brew install ast-grep` · `npm install --global @ast-grep/cli` · `cargo install ast-grep --locked`.
+  Docs: https://github.com/ast-grep/ast-grep
+- **repomix** — pack a repo (or a subtree) into one LLM-friendly file with token counts; use to hand
+  an agent whole-repo context where no index exists. No install needed: `npx repomix@latest`
+  (or `npm install -g repomix` / `brew install repomix`). Docs: https://github.com/yamadashy/repomix
+- **ripgrep (`rg`)** and **jq** are assumed present (fast text search / JSON munging). Install if
+  missing: `brew install ripgrep jq`.
+
+## When to use which
+- **CodeGraph** — structural questions on an *indexed* repo (callers/callees/impact/traces). Prefer it.
+- **ast-grep** — syntax-aware find/rewrite (codemods), or any repo that isn't indexed.
+- **ripgrep** — fast literal/regex text (comments, strings, TODOs) where structure doesn't matter.
+- **repomix** — bulk "give me the whole repo" context export.
+
+## Don'ts
+- Don't grep/ast-grep for a structural question a fresh CodeGraph index answers better.
+- Don't `npm i -g` / `brew install` silently — announce the command first.
+CG_EOF_TOOLS
+cat > "$DEST/rules-policy.md" <<'CG_EOF_RULES'
+# Security + architecture + hygiene guardrails (opt-in bundle; additive to the Karpathy guidelines)
+
+The Karpathy guidelines cover code quality. These add three orthogonal concerns. Apply them on
+relevant work — they're principles, not commands to run.
+
+## Security (OWASP-distilled)
+- Treat all external input as hostile: parameterize SQL, avoid shell-string interpolation, encode
+  output for its sink (HTML / SQL / shell / URL).
+- Never log, print, or commit secrets; load them from env / a secret store; keep them out of git.
+- Check **authentication AND authorization** on every protected path — they're different things.
+- Guard deserialization, file paths (no traversal), and redirects against untrusted values.
+- Pin and verify dependencies; don't add a package without a reason.
+
+## Architecture (12-Factor Agents)
+- Own your prompts and your context window; treat tool calls as structured outputs.
+- Prefer small, focused, composable units over one mega-agent; keep control flow explicit.
+- Compact errors into context and recover; put a human in the loop for risky/destructive actions.
+- Keep state explicit and serializable so runs are resumable. Reference:
+  https://github.com/humanlayer/12-factor-agents
+
+## Commit / PR hygiene
+- Small, focused commits; imperative subject line; explain *why* in the body.
+- One logical change per PR, with tests + a clear description.
+- No unrelated drive-by edits (this reinforces the Karpathy "surgical changes" rule).
+- Follow the repo's own commit conventions (e.g. its trailer / co-author policy).
+
+## Don'ts
+- Don't bolt on security theater beyond the task's real threat model.
+- Don't reformat or refactor unrelated code in the name of "hygiene."
+CG_EOF_RULES
+cat > "$DEST/skills-policy.md" <<'CG_EOF_SKILLS'
+# Skill registries — beyond Superpowers (opt-in bundle)
+
+Superpowers (in the default bundle) is one skill library. These are additional sources of
+installable, agent-agnostic skills. **Announce installs; verify the command against the source —
+never fabricate one.**
+
+- **Anthropic official skills** — first-party skills (document handling, `mcp-builder`,
+  `webapp-testing`, `skill-creator`, …) in the open `SKILL.md` format. Browse/install from
+  https://github.com/anthropics/skills — via your agent's plugin marketplace, or by copying a
+  `SKILL.md` into your skills directory.
+- **skills.sh registry** — the agent-agnostic installer/discovery layer:
+  `npx skills add <owner>/<repo>` writes the skill files into your skills directory. Browse:
+  https://skills.sh
+- **VoltAgent — awesome-agent-skills** — a large, *curated* (hand-picked, not AI-generated)
+  collection, strong on security (Trail of Bits) and vendor SDKs:
+  https://github.com/VoltAgent/awesome-agent-skills
+
+## How to choose
+Prefer official (Anthropic) → curated (VoltAgent) → community. Install via skills.sh for any agent
+that isn't plugin-native. A restart may be needed for new skills to load — **never claim you
+restarted yourself**; ask the user.
+
+## Don'ts
+- Don't bulk-install skills you won't use (context + maintenance cost).
+- Don't trust an uncurated / AI-generated skill without reading it first.
+CG_EOF_SKILLS
+cat > "$DEST/agent-extensions-policy.md" <<'CG_EOF_EXT'
+# First-party agent extensions — plugins/skills per agent (opt-in bundle)
+
+Each agent ecosystem ships its own plugins / skills / extensions. This points you at each one's
+**native** mechanism. **Commands and marketplaces change often and differ by agent version — VERIFY
+against the agent's current docs before running; never fabricate a command for an agent not listed.**
+Announce each install; you can't restart yourself, so ask the user to restart for new extensions to
+take effect.
+
+| Agent | First-party extension mechanism |
+|---|---|
+| Claude Code | Plugin marketplaces: `/plugin marketplace add <owner>/<repo>` then `/plugin install <name>@<marketplace>`; plus Anthropic skills (github.com/anthropics/skills) |
+| Codex | `/plugins` — search & install in-app |
+| Cursor | Rules (`.cursor/rules/*.mdc`), `.cursor/mcp.json`, and Cursor's extension/MCP marketplace |
+| Gemini CLI | `gemini extensions install <git-url>` · `gemini extensions list` |
+| opencode | plugins under `~/.config/opencode/plugins/` (+ its plugin docs) |
+| Antigravity / Kimi / Qoder | follow each tool's current plugin/skill docs — some have no marketplace yet |
+
+## Don'ts
+- Don't install marketplace plugins without announcing the command first.
+- Don't assume an extension mechanism exists for an agent that isn't listed — check its docs.
+- Don't duplicate what agent-primer already wired (the 3 core policies + any `--with` bundles).
+CG_EOF_EXT
 cat > "$DEST/install.sh" <<'CG_EOF_INSTALL'
 #!/usr/bin/env bash
 # install.sh — wire the CodeGraph session-startup rule (+ hook), the Karpathy coding
@@ -413,6 +563,7 @@ cat > "$DEST/install.sh" <<'CG_EOF_INSTALL'
 #   ./install.sh --project [DIR]     wire into a project (default: current dir)
 #   ./install.sh --global            wire into your user-level (~/) configs — applies to ALL projects
 #   ./install.sh ... --agents a,b    only these agents (default: all)
+#   ./install.sh ... --with a,b      also install opt-in bundles (mcp, tools, rules, skills, agent-extensions; or 'all')
 #   ./install.sh ... --dry-run       show what would happen, write nothing
 #
 # Agents: claude, codex, cursor, gemini, opencode, antigravity, kimi, qoder
@@ -427,12 +578,19 @@ SCRIPT_SRC="$SELF_DIR/codegraph-session-check.sh"
 POLICY_SRC="$SELF_DIR/codegraph-policy.md"
 KARPATHY_SRC="$SELF_DIR/karpathy-policy.md"
 SUPERPOWERS_SRC="$SELF_DIR/superpowers-policy.md"
+MCP_SRC="$SELF_DIR/mcp-policy.md"
+TOOLS_SRC="$SELF_DIR/tools-policy.md"
+RULES_SRC="$SELF_DIR/rules-policy.md"
+SKILLS_SRC="$SELF_DIR/skills-policy.md"
+EXT_SRC="$SELF_DIR/agent-extensions-policy.md"
 
 VERSION="0.1.0"
 SCOPE=""
 TARGET=""
 AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
+WITH=""                                   # opt-in extra bundles (comma list); the core 3 always install
+KNOWN_BUNDLES="mcp tools rules skills agent-extensions"
 DRYRUN=0
 ALWAYS=0   # 1 => thread --always into every wired hook command (legacy every-session mode)
 FAILED=0   # set to 1 by any failed write/merge; controls the final exit code
@@ -448,6 +606,7 @@ Usage:
   install.sh ... --agents a,b    only these agents (comma-separated; default: all)
   install.sh ... --dry-run       show what would happen, write nothing
   install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
+  install.sh ... --with a,b      also install opt-in bundles: mcp, tools, rules, skills, agent-extensions (or 'all')
   install.sh --version           print version and exit
   install.sh -h | --help         show this help
 
@@ -465,6 +624,8 @@ while [ "$#" -gt 0 ]; do
     --agents=*) AGENTS="${1#*=}"; shift ;;
     --dry-run) DRYRUN=1; shift ;;
     --always) ALWAYS=1; shift ;;
+    --with) WITH="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
+    --with=*) WITH="${1#*=}"; shift ;;
     --version) echo "agent-primer $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -482,10 +643,26 @@ for _a in $AGENTS; do case " $KNOWN_AGENTS " in *" $_a "*) ;; *) _bad="$_bad $_a
 IFS="$_oldifs"
 [ -n "$_bad" ] && { echo "error: unknown agent(s):$_bad" >&2; echo "known agents: $KNOWN_AGENTS" >&2; exit 2; }
 
+# Opt-in bundles (--with): default install = the core 3 policies; --with adds extras; --with all = every bundle.
+WITH="$(printf '%s' "$WITH" | tr -d '[:space:]')"
+[ "$WITH" = "all" ] && WITH="$(printf '%s' "$KNOWN_BUNDLES" | tr ' ' ',')"
+policy_on() { case ",$WITH," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
+if [ -n "$WITH" ]; then
+  _badb=""; _oldifs="$IFS"; IFS=','
+  for _b in $WITH; do case " $KNOWN_BUNDLES " in *" $_b "*) ;; *) _badb="$_badb $_b" ;; esac; done
+  IFS="$_oldifs"
+  [ -n "$_badb" ] && { echo "error: unknown bundle(s):$_badb" >&2; echo "known bundles: $KNOWN_BUNDLES (or 'all')" >&2; exit 2; }
+fi
+
 [ -f "$SCRIPT_SRC" ] || { echo "error: $SCRIPT_SRC not found" >&2; exit 2; }
 [ -f "$POLICY_SRC" ] || { echo "error: $POLICY_SRC not found" >&2; exit 2; }
 [ -f "$KARPATHY_SRC" ] || { echo "error: $KARPATHY_SRC not found" >&2; exit 2; }
 [ -f "$SUPERPOWERS_SRC" ] || { echo "error: $SUPERPOWERS_SRC not found" >&2; exit 2; }
+policy_on mcp              && { [ -f "$MCP_SRC" ]   || { echo "error: $MCP_SRC not found" >&2; exit 2; }; }
+policy_on tools            && { [ -f "$TOOLS_SRC" ] || { echo "error: $TOOLS_SRC not found" >&2; exit 2; }; }
+policy_on rules            && { [ -f "$RULES_SRC" ] || { echo "error: $RULES_SRC not found" >&2; exit 2; }; }
+policy_on skills           && { [ -f "$SKILLS_SRC" ] || { echo "error: $SKILLS_SRC not found" >&2; exit 2; }; }
+policy_on agent-extensions && { [ -f "$EXT_SRC" ]   || { echo "error: $EXT_SRC not found" >&2; exit 2; }; }
 
 if [ "$SCOPE" = "project" ]; then
   TARGET="${TARGET:-$PWD}"
@@ -664,6 +841,49 @@ selected() { case ",$AGENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 # the existing quoted command strings (empty => byte-identical to the default).
 HOOK_FLAGS=""
 [ "$ALWAYS" = 1 ] && HOOK_FLAGS=" --always"
+
+# Opt-in policy bundles (--with). Each is a HOOKLESS markdown policy distributed into the
+# same instruction channels as the core 3, via place_policy. Registry rows: id|src|marker|desc.
+EXTRA_REGISTRY="
+mcp|$MCP_SRC|agent-primer-mcp|MCP servers — Context7 docs, GitHub, Playwright (complements CodeGraph)
+tools|$TOOLS_SRC|agent-primer-tools|Code tools — ast-grep + repomix; when to use each vs CodeGraph
+rules|$RULES_SRC|agent-primer-rules|Security + 12-Factor-Agents + commit/PR hygiene guardrails
+skills|$SKILLS_SRC|agent-primer-skills|Skill registries — Anthropic skills, skills.sh, VoltAgent
+agent-extensions|$EXT_SRC|agent-primer-extensions|Per-agent first-party plugins/skills/tools
+"
+
+# Distribute one hookless policy doc into a single agent's channel(s), honoring scope.
+# Mirrors the core per-agent placement; opt-in bundles use generic frontmatter from $desc.
+place_policy() { # place_policy AGENT SRC MARKER DESC
+  local agent="$1" src="$2" marker="$3" desc="$4" kdir
+  case "$agent" in
+    claude)
+      if [ "$CLAUDE_RULE_MODE" = "append" ]; then append_marked "$CLAUDE_RULE" "$src" "$marker"
+      else putfile "${CLAUDE_RULE%/*}/$marker.md" < "$src"; fi ;;
+    codex)    append_marked "$CODEX_INSTR" "$src" "$marker" ;;
+    opencode) append_marked "$OPENCODE_INSTR" "$src" "$marker" ;;
+    gemini)   append_marked "$GEMINI_INSTR" "$src" "$marker" ;;
+    cursor)
+      [ -n "$CURSOR_MDC" ] && with_policy_frontmatter "---
+description: $desc
+alwaysApply: true
+---" "$src" | putfile "${CURSOR_MDC%/*}/$marker.mdc" ;;
+    antigravity)
+      [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/$marker.md" < "$src"
+      append_marked "$ANTI_INSTR" "$src" "$marker" ;;
+    kimi)
+      if [ "$SCOPE" = "project" ]; then kdir="$ROOT/.kimi-code/skills/$marker/SKILL.md"; else kdir="$HOME/.kimi-code/skills/$marker/SKILL.md"; fi
+      with_policy_frontmatter "---
+name: $marker
+description: $desc
+whenToUse: When this bundle's tools/rules are relevant to the task.
+---" "$src" | putfile "$kdir" ;;
+    qoder)
+      [ -n "$QODER_RULE" ] || return 0
+      with_policy_frontmatter "<!-- Set this rule's mode to 'Always Apply' in Qoder. $desc -->" "$src" | putfile "${QODER_RULE%/*}/$marker.md"
+      append_marked "$QODER_INSTR" "$src" "$marker" ;;
+  esac
+}
 
 # --- place the kit -------------------------------------------------------------
 note "scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN"
@@ -854,6 +1074,24 @@ if selected qoder; then
   fi
 fi
 
+# --- opt-in bundles (--with) ----------------------------------------------------
+# Read the registry via a here-doc-fed `while read` (NOT `… | while read`): a here-doc
+# redirect keeps the loop in the CURRENT shell, so FAILED set by place_policy/append_marked
+# propagates to the exit code. Per selected bundle: copy its doc into the kit dir once, then
+# distribute it into each selected agent via place_policy.
+while IFS='|' read -r _bid _bsrc _bmarker _bdesc; do
+  [ -n "$_bid" ] || continue
+  policy_on "$_bid" || continue
+  if [ "$DRYRUN" = 0 ]; then
+    cp "$_bsrc" "$KIT_DEST/$(basename "$_bsrc")" 2>/dev/null || { FAILED=1; note "ERROR: failed to copy $(basename "$_bsrc") to $KIT_DEST"; }
+  fi
+  for _ag in claude codex cursor gemini opencode antigravity kimi qoder; do
+    selected "$_ag" && place_policy "$_ag" "$_bsrc" "$_bmarker" "$_bdesc"
+  done
+done <<REG
+$EXTRA_REGISTRY
+REG
+
 if [ "$FAILED" = 0 ]; then note "done."; else note "done — but some writes FAILED (see ERROR lines above)."; fi
 [ "$SCOPE" = "project" ] && note "Restart your agent/IDE so MCP + hooks load. CLI works immediately via Bash."
 exit "$FAILED"
@@ -884,7 +1122,11 @@ AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
 DRYRUN=0
 FAILED=0
-MARKERS="codegraph-session-startup karpathy-guidelines superpowers"
+MARKERS="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
+# Standalone rule/skill basenames install.sh writes (core 3 + opt-in bundles). One list, used by
+# every per-agent removal loop (was duplicated 5×). Kimi's codegraph skill dir is the lone exception.
+STANDALONE_NAMES="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
+KIMI_SKILL_NAMES="codegraph-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
 HOOK_TAG="codegraph-session-check.sh"   # identifies the hook entries/commands we added
 
 usage() {
@@ -1074,26 +1316,26 @@ note "uninstall scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN"
 
 if selected claude; then
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then strip_markers "$CLAUDE_RULE"
-  else for n in codegraph-session-startup karpathy-guidelines superpowers; do rm_path "$CLAUDE_RULE_DIR/$n.md"; done; fi
+  else for n in $STANDALONE_NAMES; do rm_path "$CLAUDE_RULE_DIR/$n.md"; done; fi
   unhook_json "$SETTINGS" claude
 fi
 if selected codex; then strip_markers "$CODEX_INSTR"; unhook_json "$CFILE" codex; fi
 if selected cursor; then
-  [ -n "$CURSOR_RULE_DIR" ] && for n in codegraph-session-startup karpathy-guidelines superpowers; do rm_path "$CURSOR_RULE_DIR/$n.mdc"; done
+  [ -n "$CURSOR_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$CURSOR_RULE_DIR/$n.mdc"; done
   unhook_json "$HFILE" cursor
 fi
 if selected gemini; then strip_markers "$GEMINI_INSTR"; unhook_json "$GS" gemini; fi   # leaves context.fileName (harmless, user may rely on it)
 if selected opencode; then rm_path "$OPENCODE_PLUG"; strip_markers "$OPENCODE_INSTR"; fi
 if selected antigravity; then
-  [ -n "$ANTI_RULE_DIR" ] && for n in codegraph-session-startup karpathy-guidelines superpowers; do rm_path "$ANTI_RULE_DIR/$n.md"; done
+  [ -n "$ANTI_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$ANTI_RULE_DIR/$n.md"; done
   strip_markers "$ANTI_INSTR"; unhook_json "$AH" antigravity
 fi
 if selected kimi; then
-  for n in codegraph-startup karpathy-guidelines superpowers; do rm_path "$KIMI_SKILLS/$n"; done
+  for n in $KIMI_SKILL_NAMES; do rm_path "$KIMI_SKILLS/$n"; done
   [ "$SCOPE" = "global" ] && unhook_kimi "$KCONF"
 fi
 if selected qoder; then
-  [ -n "$QODER_RULE_DIR" ] && for n in codegraph-session-startup karpathy-guidelines superpowers; do rm_path "$QODER_RULE_DIR/$n.md"; done
+  [ -n "$QODER_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$QODER_RULE_DIR/$n.md"; done
   [ -n "$QODER_INSTR" ] && strip_markers "$QODER_INSTR"
 fi
 

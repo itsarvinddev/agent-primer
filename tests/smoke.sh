@@ -52,6 +52,27 @@ chk "--always: claude settings still valid JSON"  'vjson "$APA/.claude/settings.
 HKA="$(mk)"; guard env HOME="$HKA" bash "$INSTALL" --global --always --agents kimi >/dev/null 2>&1
 chk "--always: flag in kimi config.toml (global)" 'grep -q -- "--always" "$HKA/.kimi-code/config.toml"'
 
+echo "== --with opt-in bundles =="
+WD="$(mk)"; guard bash "$INSTALL" --project "$WD" >/dev/null 2>&1
+chk "default install: no opt-in markers"          '! has_block "$WD/AGENTS.md" agent-primer-mcp'
+chk "default install: core 3 present"             'has_block "$WD/AGENTS.md" superpowers'
+WM="$(mk)"; guard bash "$INSTALL" --project "$WM" --with mcp,rules >/dev/null 2>&1
+chk "--with mcp: marker present"                  'has_block "$WM/AGENTS.md" agent-primer-mcp'
+chk "--with rules: marker present"                'has_block "$WM/AGENTS.md" agent-primer-rules'
+chk "--with mcp,rules: tools NOT present"         '! has_block "$WM/AGENTS.md" agent-primer-tools'
+chk "--with: core 3 still present"                'has_block "$WM/AGENTS.md" karpathy-guidelines'
+chk "--with: claude settings still valid JSON"    'vjson "$WM/.claude/settings.json"'
+WK="$(mk)"; guard env HOME="$WK" bash "$INSTALL" --global --with mcp --agents kimi >/dev/null 2>&1
+chk "--with mcp: kimi skill dir created (global)" '[ -d "$WK/.kimi-code/skills/agent-primer-mcp" ]'
+WA="$(mk)"; guard bash "$INSTALL" --project "$WA" --with all >/dev/null 2>&1
+chk "--with all: 8 marker blocks"                 '[ "$(grep -c ":start -->" "$WA/AGENTS.md")" = "8" ]'
+WS="$(mk)"; cp -a "$WA/." "$WS/"; guard bash "$INSTALL" --project "$WA" --with all >/dev/null 2>&1
+chk "--with all: 2nd install no-op"               'diff -r "$WS" "$WA" >/dev/null 2>&1'
+chk "unknown bundle exits 2"                      '"$INSTALL" --with bogus --project "$(mk)" >/dev/null 2>&1; [ $? -eq 2 ]'
+guard bash "$UNINSTALL" --project "$WA" >/dev/null 2>&1
+chk "uninstall removes opt-in marker"             '! has_block "$WA/AGENTS.md" agent-primer-mcp'
+chk "uninstall removes core marker too"           '! has_block "$WA/AGENTS.md" codegraph-session-startup'
+
 echo "== project install =="
 P="$(mk)"; guard bash "$INSTALL" --project "$P" >/dev/null 2>&1
 for m in codegraph-session-startup karpathy-guidelines superpowers; do

@@ -3,9 +3,9 @@
 # make-portable.sh — generate a single self-contained `agent-primer.sh`.
 #
 # For a brand-new machine it's handy to have ONE file you can scp / paste into a gist /
-# curl. This inlines the hook script, the three policy docs, and the install + uninstall
-# scripts into a single self-extracting installer. Regenerate whenever you edit
-# codegraph-session-check.sh / *-policy.md / install.sh / uninstall.sh.
+# curl. This inlines the hook script, all policy docs (core 3 + opt-in bundles), and the
+# install + uninstall scripts into a single self-extracting installer. Regenerate whenever
+# you edit codegraph-session-check.sh / *-policy.md / install.sh / uninstall.sh.
 set -e
 cd "$(dirname "$0")"
 OUT="agent-primer.sh"
@@ -32,6 +32,21 @@ OUT="agent-primer.sh"
   printf '%s\n' "cat > \"\$DEST/superpowers-policy.md\" <<'CG_EOF_SUPERPOWERS'"
   cat superpowers-policy.md
   printf '%s\n' 'CG_EOF_SUPERPOWERS'
+  printf '%s\n' "cat > \"\$DEST/mcp-policy.md\" <<'CG_EOF_MCP'"
+  cat mcp-policy.md
+  printf '%s\n' 'CG_EOF_MCP'
+  printf '%s\n' "cat > \"\$DEST/tools-policy.md\" <<'CG_EOF_TOOLS'"
+  cat tools-policy.md
+  printf '%s\n' 'CG_EOF_TOOLS'
+  printf '%s\n' "cat > \"\$DEST/rules-policy.md\" <<'CG_EOF_RULES'"
+  cat rules-policy.md
+  printf '%s\n' 'CG_EOF_RULES'
+  printf '%s\n' "cat > \"\$DEST/skills-policy.md\" <<'CG_EOF_SKILLS'"
+  cat skills-policy.md
+  printf '%s\n' 'CG_EOF_SKILLS'
+  printf '%s\n' "cat > \"\$DEST/agent-extensions-policy.md\" <<'CG_EOF_EXT'"
+  cat agent-extensions-policy.md
+  printf '%s\n' 'CG_EOF_EXT'
   printf '%s\n' "cat > \"\$DEST/install.sh\" <<'CG_EOF_INSTALL'"
   cat install.sh
   printf '%s\n' 'CG_EOF_INSTALL'

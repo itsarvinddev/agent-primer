@@ -11,6 +11,18 @@ It installs **three policies** into the same instruction files, so every agent g
 - **Karpathy coding guidelines** (`karpathy-policy.md`) — think before coding, simplicity first, surgical changes, goal-driven execution; from [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills). Policy-only (no hook).
 - **Superpowers** (`superpowers-policy.md`) — bootstraps the [obra/superpowers](https://github.com/obra/superpowers) skills plugin per agent + carries its TDD / systematic / simplicity / evidence methodology. Policy-only (no hook).
 
+Those **three core policies install by default.** Five more **opt-in bundles** ride the same channels
+via `--with` (e.g. `install.sh --global --with mcp,rules`, or `--with all`) — kept out of the default
+so agents don't carry context they didn't ask for:
+
+| `--with` bundle | Adds |
+|---|---|
+| `mcp` | Recommended MCP servers — [Context7](https://github.com/upstash/context7) (docs) · [GitHub](https://github.com/github/github-mcp-server) · [Playwright](https://github.com/microsoft/playwright-mcp) |
+| `tools` | CLI companions — [ast-grep](https://github.com/ast-grep/ast-grep) (structural rewrite) + [repomix](https://github.com/yamadashy/repomix) (context packing) |
+| `rules` | Security (OWASP-distilled) + [12-Factor Agents](https://github.com/humanlayer/12-factor-agents) + commit/PR hygiene |
+| `skills` | More skill registries — [Anthropic skills](https://github.com/anthropics/skills) · [skills.sh](https://skills.sh) · [VoltAgent](https://github.com/VoltAgent/awesome-agent-skills) |
+| `agent-extensions` | Each agent's own first-party plugins/skills (Claude marketplaces, `gemini extensions`, Codex `/plugins`, …) |
+
 ## What's in here
 
 | File | Role |
@@ -19,7 +31,8 @@ It installs **three policies** into the same instruction files, so every agent g
 | `codegraph-policy.md` | Policy #1 — the CodeGraph session-startup rule, copied into each agent's instruction file. |
 | `karpathy-policy.md` | Policy #2 — the Karpathy coding guidelines (behavioral; no hook), copied alongside policy #1. |
 | `superpowers-policy.md` | Policy #3 — bootstraps the obra/superpowers plugin + carries its methodology (behavioral; no hook). |
-| `install.sh` | Wires the hook script + all three policies into agents. `--global`/`--project`, `--agents`, `--dry-run`, `--version`. Idempotent; refuses to touch unparseable configs; writes atomically. |
+| `{mcp,tools,rules,skills,agent-extensions}-policy.md` | Five **opt-in** bundle docs — installed only via `--with` (see the bundle table above). |
+| `install.sh` | Wires the hook script + policies into agents. `--global`/`--project`, `--agents`, `--with`, `--dry-run`, `--always`, `--version`. Idempotent; refuses to touch unparseable configs; writes atomically. |
 | `uninstall.sh` | Cleanly reverses an install (same flags). Idempotent and safe to run when nothing is installed. |
 | `agent-primer.sh` | **Single self-contained file** — the hook script, the three policies, and install + uninstall inlined. Carry/curl to a new machine (`bash agent-primer.sh --uninstall` removes). |
 | `make-portable.sh` | Regenerates `agent-primer.sh` after you edit the kit. |
@@ -86,8 +99,9 @@ Prefer not to pipe into a shell? Clone and run the installer directly:
 gh repo clone itsarvinddev/agent-primer ~/.agent-primer-src && ~/.agent-primer-src/install.sh --global
 ```
 
-Flags: `--global` / `--project [DIR]` · `--agents claude,cursor,codex` (subset) · `--dry-run` ·
-`--always` (legacy every-session `codegraph status` readout; default is quiet after first-run setup).
+Flags: `--global` / `--project [DIR]` · `--agents claude,cursor,codex` (subset) ·
+`--with mcp,rules,…` (opt-in bundles, or `all`) · `--dry-run` · `--always` (legacy every-session
+`codegraph status` readout; default is quiet after first-run setup).
 
 Then **restart your agent/IDE** so hooks + MCP tools load (the `codegraph` CLI works in your shell
 right away). Install the CodeGraph CLI itself with:
@@ -185,6 +199,14 @@ agent-primer **wires these projects into your agents — it doesn't replace them
 - **[colbymchenry/codegraph](https://github.com/colbymchenry/codegraph)** — the CodeGraph CLI + MCP server: the tree-sitter code-intelligence index this kit's session-startup rule checks for.
 - **[multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills)** — the Karpathy coding guidelines this kit distills (a republish of [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills), derived from [Andrej Karpathy's notes](https://x.com/karpathy/status/2015883857489522876)).
 - **[obra/superpowers](https://github.com/obra/superpowers)** — the Superpowers skills plugin / methodology this kit bootstraps per agent.
+
+The opt-in `--with` bundles point at: [Context7](https://github.com/upstash/context7),
+[GitHub MCP](https://github.com/github/github-mcp-server), [Playwright MCP](https://github.com/microsoft/playwright-mcp),
+[ast-grep](https://github.com/ast-grep/ast-grep), [repomix](https://github.com/yamadashy/repomix),
+[Anthropic skills](https://github.com/anthropics/skills), [skills.sh](https://skills.sh),
+[VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills),
+[12-Factor Agents](https://github.com/humanlayer/12-factor-agents), and the
+[OWASP GenAI/LLM](https://genai.owasp.org/) security guidance.
 
 ## License
 

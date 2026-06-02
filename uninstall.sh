@@ -23,7 +23,11 @@ AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
 DRYRUN=0
 FAILED=0
-MARKERS="codegraph-session-startup karpathy-guidelines superpowers"
+MARKERS="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
+# Standalone rule/skill basenames install.sh writes (core 3 + opt-in bundles). One list, used by
+# every per-agent removal loop (was duplicated 5×). Kimi's codegraph skill dir is the lone exception.
+STANDALONE_NAMES="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
+KIMI_SKILL_NAMES="codegraph-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
 HOOK_TAG="codegraph-session-check.sh"   # identifies the hook entries/commands we added
 
 usage() {
@@ -213,26 +217,26 @@ note "uninstall scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN"
 
 if selected claude; then
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then strip_markers "$CLAUDE_RULE"
-  else for n in codegraph-session-startup karpathy-guidelines superpowers; do rm_path "$CLAUDE_RULE_DIR/$n.md"; done; fi
+  else for n in $STANDALONE_NAMES; do rm_path "$CLAUDE_RULE_DIR/$n.md"; done; fi
   unhook_json "$SETTINGS" claude
 fi
 if selected codex; then strip_markers "$CODEX_INSTR"; unhook_json "$CFILE" codex; fi
 if selected cursor; then
-  [ -n "$CURSOR_RULE_DIR" ] && for n in codegraph-session-startup karpathy-guidelines superpowers; do rm_path "$CURSOR_RULE_DIR/$n.mdc"; done
+  [ -n "$CURSOR_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$CURSOR_RULE_DIR/$n.mdc"; done
   unhook_json "$HFILE" cursor
 fi
 if selected gemini; then strip_markers "$GEMINI_INSTR"; unhook_json "$GS" gemini; fi   # leaves context.fileName (harmless, user may rely on it)
 if selected opencode; then rm_path "$OPENCODE_PLUG"; strip_markers "$OPENCODE_INSTR"; fi
 if selected antigravity; then
-  [ -n "$ANTI_RULE_DIR" ] && for n in codegraph-session-startup karpathy-guidelines superpowers; do rm_path "$ANTI_RULE_DIR/$n.md"; done
+  [ -n "$ANTI_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$ANTI_RULE_DIR/$n.md"; done
   strip_markers "$ANTI_INSTR"; unhook_json "$AH" antigravity
 fi
 if selected kimi; then
-  for n in codegraph-startup karpathy-guidelines superpowers; do rm_path "$KIMI_SKILLS/$n"; done
+  for n in $KIMI_SKILL_NAMES; do rm_path "$KIMI_SKILLS/$n"; done
   [ "$SCOPE" = "global" ] && unhook_kimi "$KCONF"
 fi
 if selected qoder; then
-  [ -n "$QODER_RULE_DIR" ] && for n in codegraph-session-startup karpathy-guidelines superpowers; do rm_path "$QODER_RULE_DIR/$n.md"; done
+  [ -n "$QODER_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$QODER_RULE_DIR/$n.md"; done
   [ -n "$QODER_INSTR" ] && strip_markers "$QODER_INSTR"
 fi
 
