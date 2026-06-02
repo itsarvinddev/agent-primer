@@ -7,7 +7,7 @@ into any project, or install once globally for all projects.
 
 It installs **three policies** into the same instruction files, so every agent gets all of them:
 
-- **CodeGraph session-startup rule** (`codegraph-policy.md`) — install / index / sync before work; backed by a `SessionStart` hook.
+- **CodeGraph session-startup rule** (`codegraph-policy.md`) — install / index / sync [colbymchenry/codegraph](https://github.com/colbymchenry/codegraph) before work; backed by a `SessionStart` hook.
 - **Karpathy coding guidelines** (`karpathy-policy.md`) — think before coding, simplicity first, surgical changes, goal-driven execution; from [multica-ai/andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills). Policy-only (no hook).
 - **Superpowers** (`superpowers-policy.md`) — bootstraps the [obra/superpowers](https://github.com/obra/superpowers) skills plugin per agent + carries its TDD / systematic / simplicity / evidence methodology. Policy-only (no hook).
 
