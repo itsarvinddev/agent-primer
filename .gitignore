@@ -6,3 +6,21 @@
 
 # AI agent files
 /docs/*
+# primer (experimental): local learned coding-style DB
+.primer/
+
+# agent-primer self-install artifacts — created when the kit is installed INTO this
+# repo for dogfooding. They are generated output, never part of the kit itself.
+.agents/
+.claude/
+.codex/
+.cursor/
+.gemini/
+.kimi-code/
+.opencode/
+.qoder/
+.mcp.json
+opencode.json
+AGENTS.md
+GEMINI.md
+/tools/

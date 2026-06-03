@@ -47,6 +47,9 @@ OUT="agent-primer.sh"
   printf '%s\n' "cat > \"\$DEST/agent-extensions-policy.md\" <<'CG_EOF_EXT'"
   cat agent-extensions-policy.md
   printf '%s\n' 'CG_EOF_EXT'
+  printf '%s\n' "cat > \"\$DEST/primer-policy.md\" <<'CG_EOF_PRIMER'"
+  cat primer-policy.md
+  printf '%s\n' 'CG_EOF_PRIMER'
   printf '%s\n' "cat > \"\$DEST/install.sh\" <<'CG_EOF_INSTALL'"
   cat install.sh
   printf '%s\n' 'CG_EOF_INSTALL'

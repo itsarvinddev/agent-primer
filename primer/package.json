@@ -1,0 +1,60 @@
+{
+  "name": "@agent-primer/primer",
+  "version": "0.1.0",
+  "description": "primer — a local-first personal coding-intelligence engine. Learns your coding taste from your edits and serves it to AI agents over MCP, fully local (no model, no network, no telemetry).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "bin": {
+    "primer": "dist/bin/primer.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "DESIGN.md",
+    "kit"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/itsarvinddev/agent-primer.git",
+    "directory": "primer"
+  },
+  "homepage": "https://github.com/itsarvinddev/agent-primer/tree/main/primer",
+  "bugs": {
+    "url": "https://github.com/itsarvinddev/agent-primer/issues"
+  },
+  "keywords": [
+    "coding-style",
+    "ai-agents",
+    "mcp",
+    "tree-sitter",
+    "local-first",
+    "personal-intelligence",
+    "primer"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "npm run build",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test",
+    "prepack": "node scripts/bundle-kit.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "commander": "^14.0.0",
+    "tree-sitter-wasms": "^0.1.11",
+    "web-tree-sitter": "^0.25.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

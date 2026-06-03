@@ -548,6 +548,50 @@ take effect.
 - Don't assume an extension mechanism exists for an agent that isn't listed — check its docs.
 - Don't duplicate what agent-primer already wired (the 3 core policies + any `--with` bundles).
 CG_EOF_EXT
+cat > "$DEST/primer-policy.md" <<'CG_EOF_PRIMER'
+# primer — your local coding-style memory (every session, every agent)
+
+primer is a local-first personal coding-intelligence engine wired by agent-primer's
+`--with primer`. It learns your personal coding style from your edits and serves it over **MCP**,
+so the agent writes code the way **you** do. 100% local — no model, no network, no telemetry.
+*What CodeGraph is for code structure, primer is for your coding taste.* Opt-in via
+`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 22.5.
+
+## Use the `primer_*` MCP tools (available after a restart)
+- **Before** writing or editing code, call **`primer_apply`** (pass language/context) and apply the
+  returned preferences alongside the project's own conventions.
+- When the user **corrects** your code or **states** a durable preference ("always X", "prefer Y",
+  "don't Z"), call **`primer_record`** — a controlled category + one terse imperative line.
+  **Announce it** before running.
+- When a `[Primer]` note says signals are pending, call **`primer_learn`** for a bounded digest of
+  recent edits, then `primer_record` the durable preferences it reveals (skip ones already there).
+- **`primer_query`** / **`primer_status`** search / report the style memory.
+
+## The `[Primer]` session brief
+A SessionStart hook injects a bounded `[Primer]` style brief each session (Claude / Cursor / Gemini /
+Codex / Antigravity / opencode, and Kimi on `--global`, in this build). Treat it as the
+user's coding-style preferences and apply them. Project conventions and explicit in-session
+instructions win over the stored brief.
+
+## Guardrails
+- **Only record durable, real preferences** — never task-specific one-offs, never your own opinion.
+- **Never fabricate** — an empty primer is correct until the user expresses taste.
+- **Announce** any `primer_record` before running it.
+- **Distillation spends YOUR tokens** (primer has no model of its own) — keep `primer_learn` bounded;
+  don't over-record near-duplicates (the store will ask you to merge instead).
+- **Restart reality**: the `primer_*` MCP tools load only after the agent/IDE restarts. You cannot
+  restart yourself — ask the user. The `[Primer]` session brief works without a restart.
+
+## Privacy
+The style DB lives in a gitignored `.primer/` (project) or `~/.primer/` (global). Signals come only
+from source files (secrets, generated, and dependency files are skipped), and excerpts are
+secret-scrubbed and size-capped. Nothing leaves the machine.
+
+## Don'ts
+- Don't claim the `primer_*` tools are active before a restart — verify, or use the `[Primer]` brief.
+- Don't record secrets, file paths, or one-off task details as preferences.
+- Don't treat primer as authoritative over explicit project conventions or the user's in-session ask.
+CG_EOF_PRIMER
 cat > "$DEST/install.sh" <<'CG_EOF_INSTALL'
 #!/usr/bin/env bash
 # install.sh — wire the CodeGraph session-startup rule (+ hook), the Karpathy coding
@@ -583,6 +627,7 @@ TOOLS_SRC="$SELF_DIR/tools-policy.md"
 RULES_SRC="$SELF_DIR/rules-policy.md"
 SKILLS_SRC="$SELF_DIR/skills-policy.md"
 EXT_SRC="$SELF_DIR/agent-extensions-policy.md"
+PRIMER_SRC="$SELF_DIR/primer-policy.md"           # --with primer: the primer coding-style engine (see primer/)
 
 VERSION="0.1.0"
 SCOPE=""
@@ -591,6 +636,7 @@ AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
 WITH=""                                   # opt-in extra bundles (comma list); the core 3 always install
 KNOWN_BUNDLES="mcp tools rules skills agent-extensions"
+KNOWN_SOLO="primer"               # opt-in (needs Node); NEVER part of `--with all`
 DRYRUN=0
 ALWAYS=0   # 1 => thread --always into every wired hook command (legacy every-session mode)
 FAILED=0   # set to 1 by any failed write/merge; controls the final exit code
@@ -607,6 +653,7 @@ Usage:
   install.sh ... --dry-run       show what would happen, write nothing
   install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
   install.sh ... --with a,b      also install opt-in bundles: mcp, tools, rules, skills, agent-extensions (or 'all')
+  install.sh ... --with primer   wire the local coding-style engine (Node>=22.5; not in 'all')
   install.sh --version           print version and exit
   install.sh -h | --help         show this help
 
@@ -649,9 +696,9 @@ WITH="$(printf '%s' "$WITH" | tr -d '[:space:]')"
 policy_on() { case ",$WITH," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 if [ -n "$WITH" ]; then
   _badb=""; _oldifs="$IFS"; IFS=','
-  for _b in $WITH; do case " $KNOWN_BUNDLES " in *" $_b "*) ;; *) _badb="$_badb $_b" ;; esac; done
+  for _b in $WITH; do case " $KNOWN_BUNDLES $KNOWN_SOLO " in *" $_b "*) ;; *) _badb="$_badb $_b" ;; esac; done
   IFS="$_oldifs"
-  [ -n "$_badb" ] && { echo "error: unknown bundle(s):$_badb" >&2; echo "known bundles: $KNOWN_BUNDLES (or 'all')" >&2; exit 2; }
+  [ -n "$_badb" ] && { echo "error: unknown bundle(s):$_badb" >&2; echo "known bundles: $KNOWN_BUNDLES (or 'all'); solo (not in all): $KNOWN_SOLO" >&2; exit 2; }
 fi
 
 [ -f "$SCRIPT_SRC" ] || { echo "error: $SCRIPT_SRC not found" >&2; exit 2; }
@@ -832,6 +879,64 @@ PY
 
 with_policy_frontmatter() { # with_policy_frontmatter "<frontmatter>" [POLICY_FILE]  (emits frontmatter+policy to stdout)
   printf '%s\n' "$1"; cat "${2:-$POLICY_SRC}"
+}
+
+# --- primer helpers ---------------------------------------------
+# Merge a PostToolUse command hook into a JSON config (Claude). STRICTLY ADDITIVE to
+# hooks.PostToolUse — never touches SessionStart. Idempotent; refuses malformed JSON; atomic.
+json_posttooluse() { # json_posttooluse FILE CMD MATCHER
+  local file="$1" cmd="$2" matcher="$3"
+  if [ "$DRYRUN" = 1 ]; then note "would register PostToolUse capture hook in $file"; return 0; fi
+  [ "$HAVE_PY" = 1 ] || { note "python3 not found — add a PostToolUse hook to $file manually: $cmd"; return 0; }
+  mkdir -p "$(dirname "$file")" 2>/dev/null
+  if CG_FILE="$file" CG_CMD="$cmd" CG_MATCHER="$matcher" "$PY" - <<'PY'
+import os, json, sys, tempfile
+f=os.environ["CG_FILE"]; cmd=os.environ["CG_CMD"]; matcher=os.environ["CG_MATCHER"]
+raw=open(f,encoding="utf-8").read() if os.path.exists(f) else ""
+data={}
+if raw.strip():
+    try: data=json.loads(raw)
+    except Exception as ex:
+        sys.stderr.write(f"[agent-primer] {f}: not valid JSON ({ex}); refusing to modify it\n"); sys.exit(2)
+    if not isinstance(data, dict): sys.exit(2)
+arr=data.setdefault("hooks", {}).setdefault("PostToolUse", [])   # additive: SessionStart is never touched here
+def has(a):
+    for e in a:
+        if isinstance(e, dict):
+            for h in (e.get("hooks") or []):
+                if isinstance(h, dict) and h.get("command")==cmd: return True
+    return False
+if not has(arr):
+    arr.append({"matcher": matcher, "hooks":[{"type":"command","command":cmd}]})
+text=json.dumps(data, indent=2)+"\n"
+d=os.path.dirname(f) or "."
+fd,tmp=tempfile.mkstemp(dir=d, prefix=".ap-", suffix=".tmp")
+try:
+    with os.fdopen(fd,"w",encoding="utf-8") as out: out.write(text)
+    os.replace(tmp,f)
+except Exception as ex:
+    try: os.unlink(tmp)
+    except OSError: pass
+    sys.stderr.write(f"[agent-primer] {f}: write failed ({ex})\n"); sys.exit(3)
+PY
+  then note "registered PostToolUse capture hook in $file"
+  else FAILED=1; note "could not add PostToolUse hook to $file (left untouched)"; fi
+}
+
+# Node >= 22.5 (primer needs the built-in node:sqlite).
+primer_node_ok() {
+  command -v node >/dev/null 2>&1 || return 1
+  node -e 'var v=process.versions.node.split(".").map(Number);process.exit((v[0]>22||(v[0]===22&&v[1]>=5))?0:1)' >/dev/null 2>&1
+}
+
+# Idempotently gitignore the local style DB.
+primer_gitignore() { # primer_gitignore GITIGNORE_FILE
+  local gi="$1"
+  if [ "$DRYRUN" = 1 ]; then note "would add .primer/ to $gi"; return 0; fi
+  if [ -f "$gi" ] && grep -qE '^/?\.primer/?$' "$gi" 2>/dev/null; then return 0; fi
+  if printf '\n# primer: local learned coding-style DB\n.primer/\n' >> "$gi" 2>/dev/null; then
+    note "added .primer/ to $gi"
+  else note "could not update $gi (add .primer/ manually)"; fi
 }
 
 selected() { case ",$AGENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
@@ -1092,6 +1197,116 @@ done <<REG
 $EXTRA_REGISTRY
 REG
 
+# --- primer (--with primer) --------------------------------------
+# primer is the published TS/Node tool @agent-primer/primer. It's resolved fastest-first:
+# an installed `primer` CLI (PATH) > a repo build (dev) > `npm i -g @agent-primer/primer`
+# (so the portable installer works with no clone). Everything below is gated on
+# `policy_on primer`; the default install and `--with all` never touch it, and the proven
+# core wiring above stays byte-identical.
+PRIMER_PKG="@agent-primer/primer"
+run_primer() { # run primer however it was resolved
+  case "${PRIMER_KIND:-}" in
+    path) primer "$@" ;;
+    repo) "$NODE_BIN" "$PRIMER_JS" "$@" ;;
+    *) return 1 ;;
+  esac
+}
+if policy_on primer; then
+  note "primer (coding-style engine). Architecture + roadmap: primer/DESIGN.md"
+  # primer launcher: repo layout ($SELF_DIR/primer/dist) or bundled-npm layout (kit/../dist).
+  PRIMER_JS="$SELF_DIR/primer/dist/bin/primer.js"
+  [ -f "$PRIMER_JS" ] || { [ -f "$SELF_DIR/../dist/bin/primer.js" ] && PRIMER_JS="$SELF_DIR/../dist/bin/primer.js"; }
+  NODE_BIN="$(command -v node || true)"
+  # A launcher under npx's transient cache (~/.npm/_npx/<hash>) must NOT be wired into persistent
+  # agent config — npx prunes it and every hook/MCP entry would dangle. Treat it as "no stable
+  # build" so we resolve a persistent primer (installed CLI, else `npm i -g`) instead.
+  PRIMER_STABLE_JS=""
+  case "$PRIMER_JS" in */_npx/*) : ;; *) [ -f "$PRIMER_JS" ] && PRIMER_STABLE_JS="$PRIMER_JS" ;; esac
+  PRIMER_KIND=""
+  if command -v primer >/dev/null 2>&1; then
+    PRIMER_KIND="path"; note "primer: using installed CLI ($(command -v primer))"
+  elif [ -n "$PRIMER_STABLE_JS" ]; then
+    PRIMER_JS="$PRIMER_STABLE_JS"; PRIMER_KIND="repo"; note "primer: using repo build ($PRIMER_JS)"
+  elif [ -d "$SELF_DIR/primer" ] && primer_node_ok && [ "$DRYRUN" = 0 ]; then
+    note "primer: building from repo (npm ci && npm run build) ..."
+    ( cd "$SELF_DIR/primer" && npm ci >/dev/null 2>&1 && npm run build >/dev/null 2>&1 ) && [ -f "$SELF_DIR/primer/dist/bin/primer.js" ] && { PRIMER_JS="$SELF_DIR/primer/dist/bin/primer.js"; PRIMER_KIND="repo"; }
+  fi
+  if [ -z "$PRIMER_KIND" ] && [ "$DRYRUN" = 0 ] && command -v npm >/dev/null 2>&1 && primer_node_ok; then
+    note "primer: installing $PRIMER_PKG globally so wired paths persist (npx's cache is temporary) ..."
+    npm install -g "$PRIMER_PKG" >/dev/null 2>&1 && command -v primer >/dev/null 2>&1 && { PRIMER_KIND="path"; note "primer: installed -> $(command -v primer)"; }
+  fi
+  case "$PRIMER_KIND" in
+    path) PRIMER_INVOKE="primer" ;;
+    repo) PRIMER_INVOKE="\"$NODE_BIN\" \"$PRIMER_JS\"" ;;
+    *) PRIMER_INVOKE="" ;;
+  esac
+
+  if [ -z "$PRIMER_KIND" ]; then
+    if [ "$DRYRUN" = 1 ]; then note "would resolve primer (installed CLI / repo build / npm i -g $PRIMER_PKG) and wire it."
+    else note "primer: could not resolve a runnable primer. Install once: npm i -g $PRIMER_PKG (needs Node>=22.5), then re-run with --with primer. Ad-hoc: npx $PRIMER_PKG"; fi
+  elif [ "$DRYRUN" = 1 ]; then
+    note "would init the style DB, register the MCP server, distribute primer-policy.md, and wire the [Primer] brief + capture hooks via: $PRIMER_INVOKE"
+  else
+    # primer's MCP installer only knows these agents; honor --agents.
+    PRIMER_TARGETS=""
+    for _ag in claude cursor gemini codex opencode; do selected "$_ag" && PRIMER_TARGETS="$PRIMER_TARGETS,$_ag"; done
+    PRIMER_TARGETS="${PRIMER_TARGETS#,}"
+    # Init the style DB (scope-aware) + register the MCP server.
+    if [ "$SCOPE" = "project" ]; then
+      run_primer init --db "$ROOT/.primer/primer.db" >/dev/null 2>&1 || true
+      [ -n "$PRIMER_TARGETS" ] && run_primer install --local --cwd "$ROOT" --target "$PRIMER_TARGETS" 2>&1 | sed 's/^/[agent-primer] /'
+      primer_gitignore "$ROOT/.gitignore"
+    else
+      run_primer init --scope global >/dev/null 2>&1 || true
+      [ -n "$PRIMER_TARGETS" ] && run_primer install --target "$PRIMER_TARGETS" 2>&1 | sed 's/^/[agent-primer] /'
+    fi
+    # Distribute the policy doc to every selected agent (marker: primer).
+    if [ -f "$PRIMER_SRC" ]; then
+      for _ag in claude codex cursor gemini opencode antigravity kimi qoder; do
+        selected "$_ag" && place_policy "$_ag" "$PRIMER_SRC" "primer" "primer — apply + record your local coding style over MCP"
+      done
+    fi
+    # The [Primer] SessionStart brief (agents whose hook format we already support) + Claude
+    # PostToolUse capture. All ADDITIVE; SessionStart entries already present stay untouched.
+    selected claude && { json_hook "$SETTINGS" claude "$PRIMER_INVOKE brief --format json --nudge"; json_posttooluse "$SETTINGS" "$PRIMER_INVOKE signal --stdin" "Edit|Write|MultiEdit"; }
+    selected gemini      && json_hook "$GS"    gemini      "$PRIMER_INVOKE brief --format json --nudge"
+    selected cursor      && json_hook "$HFILE" cursor      "$PRIMER_INVOKE brief --format cursor --nudge"
+    selected codex       && json_hook "$CFILE" codex       "$PRIMER_INVOKE brief --format text --nudge"
+    selected antigravity && json_hook "$AH"    antigravity "$PRIMER_INVOKE brief --format text --nudge"
+    # opencode uses a .js plugin (not JSON hooks): emit the [Primer] brief on session.created.
+    if selected opencode; then
+      if [ "$SCOPE" = "project" ]; then PPLUG="$ROOT/.opencode/plugins/primer-session-check.js"; else PPLUG="$HOME/.config/opencode/plugins/primer-session-check.js"; fi
+      putfile "$PPLUG" <<JS
+// agent-primer: primer [Primer] style brief for opencode (emitted on session.created).
+export const PrimerSessionCheck = async ({ \$ }) => ({
+  "session.created": async () => {
+    try {
+      const out = await \$\`$PRIMER_INVOKE brief --format text --nudge\`.quiet().nothrow();
+      const text = (out.stdout || "").toString().trim();
+      if (text) console.log(text);
+    } catch (_) { /* never block session start */ }
+  },
+});
+JS
+    fi
+    # kimi hooks are global-only: add a SECOND SessionStart [[hooks]] for the primer brief.
+    if selected kimi && [ "$SCOPE" = "global" ]; then
+      KCONF="$HOME/.kimi-code/config.toml"; mkdir -p "$(dirname "$KCONF")" 2>/dev/null
+      if grep -q "brief --format text" "$KCONF" 2>/dev/null; then note "Kimi primer brief already in $KCONF"
+      elif printf '\n# primer brief\n[[hooks]]\nevent = "SessionStart"\ncommand = "%s"\ntimeout = 10\n' "$(toml_esc "$PRIMER_INVOKE brief --format text --nudge")" >> "$KCONF"; then note "appended Kimi primer brief to $KCONF (global)"
+      else note "could not append Kimi primer brief to $KCONF"; fi
+      # Kimi PostToolUse capture (payload arrives on stdin, like Claude).
+      if ! grep -q "signal --stdin" "$KCONF" 2>/dev/null; then
+        printf '\n# primer capture\n[[hooks]]\nevent = "PostToolUse"\nmatcher = "WriteFile|StrReplaceFile"\ncommand = "%s"\ntimeout = 10\n' "$(toml_esc "$PRIMER_INVOKE signal --stdin")" >> "$KCONF" && note "appended Kimi primer capture to $KCONF (global)"
+      fi
+    elif selected kimi; then
+      note "primer: Kimi hooks are global-only — the [Primer] brief + capture need --global (Kimi still gets the policy)."
+    fi
+    note "primer: wired ($SCOPE, via $PRIMER_KIND). RESTART your agent so the primer_* MCP tools load (the [Primer] brief works now)."
+    note "primer: brief -> claude/cursor/gemini/codex/antigravity/opencode (Kimi on --global; Qoder=policy). Edit-capture -> Claude + Kimi (--global); opencode capture is a follow-up."
+  fi
+fi
+
 if [ "$FAILED" = 0 ]; then note "done."; else note "done — but some writes FAILED (see ERROR lines above)."; fi
 [ "$SCOPE" = "project" ] && note "Restart your agent/IDE so MCP + hooks load. CLI works immediately via Bash."
 exit "$FAILED"
@@ -1115,19 +1330,24 @@ cat > "$DEST/uninstall.sh" <<'CG_EOF_UNINSTALL'
 
 set -u
 
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+PRIMER_JS="$SELF_DIR/primer/dist/bin/primer.js"   # primer launcher (repo layout)
+[ -f "$PRIMER_JS" ] || { [ -f "$SELF_DIR/../dist/bin/primer.js" ] && PRIMER_JS="$SELF_DIR/../dist/bin/primer.js"; }   # bundled-npm layout
 VERSION="0.1.0"
 SCOPE=""
 TARGET=""
 AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
 DRYRUN=0
+PURGE=0    # --purge also deletes the learned primer style DB (.primer/); default PRESERVES it
 FAILED=0
-MARKERS="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
+MARKERS="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions primer"
 # Standalone rule/skill basenames install.sh writes (core 3 + opt-in bundles). One list, used by
 # every per-agent removal loop (was duplicated 5×). Kimi's codegraph skill dir is the lone exception.
-STANDALONE_NAMES="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
-KIMI_SKILL_NAMES="codegraph-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
-HOOK_TAG="codegraph-session-check.sh"   # identifies the hook entries/commands we added
+STANDALONE_NAMES="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions primer"
+KIMI_SKILL_NAMES="codegraph-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions primer"
+HOOK_TAG="codegraph-session-check.sh"   # identifies the core hook entries/commands we added
+PRIMER_TAG="primer.js|brief --format|signal --stdin"   # any of these identifies a primer hook (repo/global/npx forms)
 
 usage() {
   cat <<'EOF'
@@ -1138,6 +1358,7 @@ Usage:
   uninstall.sh --global            remove from your user-level (~/) configs
   uninstall.sh ... --agents a,b    only these agents (comma-separated; default: all)
   uninstall.sh ... --dry-run       show what would happen, change nothing
+  uninstall.sh ... --purge         also delete the primer style DB (.primer/); default keeps it
   uninstall.sh --version           print version and exit
   uninstall.sh -h | --help         show this help
 
@@ -1152,6 +1373,7 @@ while [ "$#" -gt 0 ]; do
     --agents) AGENTS="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --agents=*) AGENTS="${1#*=}"; shift ;;
     --dry-run) DRYRUN=1; shift ;;
+    --purge) PURGE=1; shift ;;
     --version) echo "agent-primer $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -1285,17 +1507,17 @@ PY
 }
 
 # Remove our [[hooks]] block (and its leading comment) from Kimi's config.toml.
-unhook_kimi() { # unhook_kimi FILE
-  local file="$1"; [ -f "$file" ] || return 0
+unhook_kimi() { # unhook_kimi FILE [TAG]   (TAG may be a pipe-list of substrings)
+  local file="$1" tag="${2:-$HOOK_TAG}"; [ -f "$file" ] || return 0
   if [ "$DRYRUN" = 1 ]; then note "would remove Kimi hook from $file"; return 0; fi
-  if [ "$HAVE_PY" = 0 ]; then note "python3 not found — remove the [[hooks]] block running $HOOK_TAG from $file by hand"; return 0; fi
-  if CG_FILE="$file" CG_TAG="$HOOK_TAG" "$PY" - <<'PY'
+  if [ "$HAVE_PY" = 0 ]; then note "python3 not found — remove the [[hooks]] block running $tag from $file by hand"; return 0; fi
+  if CG_FILE="$file" CG_TAG="$tag" "$PY" - <<'PY'
 import os, re, sys, tempfile
-f=os.environ["CG_FILE"]; tag=os.environ["CG_TAG"]
+f=os.environ["CG_FILE"]; tag=os.environ["CG_TAG"]; tags=[t for t in tag.split("|") if t]
 txt=open(f,encoding="utf-8").read(); orig=txt
-# Drop an optional leading "# codegraph-session-startup" comment + the [[hooks]] block
-# (up to the next table header or EOF) when that block references our hook.
-def repl(m): return "" if tag in m.group(0) else m.group(0)
+# Drop an optional leading comment + the [[hooks]] block (up to the next table header
+# or EOF) when that block references any of our hook tags.
+def repl(m): return "" if any(t in m.group(0) for t in tags) else m.group(0)
 txt=re.sub(r"(?:^[ \t]*#[^\n]*\n)?^\[\[hooks\]\][^\[]*", repl, txt, flags=re.M)
 if txt==orig: sys.exit(0)
 txt=re.sub(r"\n{3,}", "\n\n", txt).lstrip("\n")
@@ -1312,7 +1534,55 @@ PY
   else FAILED=1; note "ERROR: failed to remove Kimi hook from $file"; fi
 }
 
-note "uninstall scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN"
+# Remove any hook entry whose command references TAG, from EVERY hooks.* array
+# (SessionStart, sessionStart, PostToolUse). Used to pull the primer hooks.
+unhook_tag() { # unhook_tag FILE TAG
+  local file="$1" tag="$2"; [ -f "$file" ] || return 0
+  if [ "$DRYRUN" = 1 ]; then note "would remove $tag hooks from $file"; return 0; fi
+  if [ "$HAVE_PY" = 0 ]; then note "python3 not found — remove hook entries running $tag from $file by hand"; return 0; fi
+  if CG_FILE="$file" CG_TAG="$tag" "$PY" - <<'PY'
+import os, json, sys, tempfile
+f=os.environ["CG_FILE"]; tag=os.environ["CG_TAG"]
+raw=open(f,encoding="utf-8").read()
+if not raw.strip(): sys.exit(0)
+try: data=json.loads(raw)
+except Exception as ex:
+    sys.stderr.write(f"[agent-primer] {f}: invalid JSON ({ex}); refusing to modify it\n"); sys.exit(2)
+if not isinstance(data, dict): sys.exit(0)
+hooks=data.get("hooks")
+if not isinstance(hooks, dict): sys.exit(0)
+tags=[t for t in tag.split("|") if t]
+def hit(cmd): return any(t in cmd for t in tags)
+def ours(e):
+    if not isinstance(e, dict): return False
+    if hit(str(e.get("command",""))): return True
+    return any(isinstance(h,dict) and hit(str(h.get("command",""))) for h in (e.get("hooks") or []))
+changed=False
+for key in list(hooks.keys()):
+    arr=hooks.get(key)
+    if not isinstance(arr, list): continue
+    new=[e for e in arr if not ours(e)]
+    if len(new)!=len(arr):
+        changed=True
+        if new: hooks[key]=new
+        else: del hooks[key]
+if not changed: sys.exit(0)
+if not hooks: data.pop("hooks", None)
+text=json.dumps(data, indent=2)+"\n"
+d=os.path.dirname(f) or "."; fd,tmp=tempfile.mkstemp(dir=d, prefix=".ap-", suffix=".tmp")
+try:
+    with os.fdopen(fd,"w",encoding="utf-8") as o: o.write(text)
+    os.replace(tmp,f)
+except Exception as ex:
+    try: os.unlink(tmp)
+    except OSError: pass
+    sys.stderr.write(f"[agent-primer] {f}: write failed ({ex})\n"); sys.exit(3)
+PY
+  then note "removed $tag hooks from $file"
+  else FAILED=1; note "ERROR: failed to remove $tag hooks from $file"; fi
+}
+
+note "uninstall scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN  purge=$PURGE"
 
 if selected claude; then
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then strip_markers "$CLAUDE_RULE"
@@ -1325,18 +1595,42 @@ if selected cursor; then
   unhook_json "$HFILE" cursor
 fi
 if selected gemini; then strip_markers "$GEMINI_INSTR"; unhook_json "$GS" gemini; fi   # leaves context.fileName (harmless, user may rely on it)
-if selected opencode; then rm_path "$OPENCODE_PLUG"; strip_markers "$OPENCODE_INSTR"; fi
+if selected opencode; then rm_path "$OPENCODE_PLUG"; rm_path "${OPENCODE_PLUG%/*}/primer-session-check.js"; strip_markers "$OPENCODE_INSTR"; fi
 if selected antigravity; then
   [ -n "$ANTI_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$ANTI_RULE_DIR/$n.md"; done
   strip_markers "$ANTI_INSTR"; unhook_json "$AH" antigravity
 fi
 if selected kimi; then
   for n in $KIMI_SKILL_NAMES; do rm_path "$KIMI_SKILLS/$n"; done
-  [ "$SCOPE" = "global" ] && unhook_kimi "$KCONF"
+  [ "$SCOPE" = "global" ] && unhook_kimi "$KCONF" "$HOOK_TAG|$PRIMER_TAG"
 fi
 if selected qoder; then
   [ -n "$QODER_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$QODER_RULE_DIR/$n.md"; done
   [ -n "$QODER_INSTR" ] && strip_markers "$QODER_INSTR"
+fi
+
+# --- remove primer wiring (brief/capture hooks + MCP entries); PRESERVE the DB ---
+# primer hooks live alongside the core ones in the same JSON configs — strip by tag from every
+# hooks.* array. MCP entries come out via `primer uninstall`. The learned DB is kept unless --purge.
+selected claude      && unhook_tag "$SETTINGS" "$PRIMER_TAG"
+selected cursor      && unhook_tag "$HFILE" "$PRIMER_TAG"
+selected gemini      && unhook_tag "$GS" "$PRIMER_TAG"
+selected codex       && unhook_tag "$CFILE" "$PRIMER_TAG"
+selected antigravity && unhook_tag "$AH" "$PRIMER_TAG"
+if [ -f "$PRIMER_JS" ] && command -v node >/dev/null 2>&1 && [ "$DRYRUN" = 0 ]; then
+  PRIMER_TARGETS=""
+  for _ag in claude cursor gemini codex opencode; do selected "$_ag" && PRIMER_TARGETS="$PRIMER_TARGETS,$_ag"; done
+  PRIMER_TARGETS="${PRIMER_TARGETS#,}"
+  if [ -n "$PRIMER_TARGETS" ]; then
+    if [ "$SCOPE" = "project" ]; then node "$PRIMER_JS" uninstall --local --cwd "$ROOT" --target "$PRIMER_TARGETS" 2>&1 | sed 's/^/[agent-primer] /'
+    else node "$PRIMER_JS" uninstall --target "$PRIMER_TARGETS" 2>&1 | sed 's/^/[agent-primer] /'; fi
+  fi
+fi
+# The learned style DB is the user's data — preserve it unless --purge.
+PRIMER_DB_DIR="$ROOT/.primer"
+if [ -d "$PRIMER_DB_DIR" ]; then
+  if [ "$PURGE" = 1 ]; then rm_path "$PRIMER_DB_DIR"
+  else note "preserved your learned primer style DB at $PRIMER_DB_DIR (re-run with --purge to delete it)"; fi
 fi
 
 # Remove the kit dir last (it's wholly owned by agent-primer).

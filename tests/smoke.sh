@@ -73,6 +73,36 @@ guard bash "$UNINSTALL" --project "$WA" >/dev/null 2>&1
 chk "uninstall removes opt-in marker"             '! has_block "$WA/AGENTS.md" agent-primer-mcp'
 chk "uninstall removes core marker too"           '! has_block "$WA/AGENTS.md" codegraph-session-startup'
 
+echo "== --with primer =="
+# Cheap invariants (no build): primer is recognized, and excluded from default + --with all.
+chk "--with primer recognized (not unknown)"      'guard bash "$INSTALL" --project "$(mk)" --agents claude --with primer --dry-run >/dev/null 2>&1; [ $? -ne 2 ]'
+PDEF="$(mk)"; guard bash "$INSTALL" --project "$PDEF" --agents claude >/dev/null 2>&1
+chk "default: no primer policy file"              '[ ! -f "$PDEF/.claude/rules/primer.md" ]'
+chk "default: no primer hook"                     '! grep -q "primer.js" "$PDEF/.claude/settings.json" 2>/dev/null'
+chk "default: no .primer DB dir"                  '[ ! -d "$PDEF/.primer" ]'
+PALL="$(mk)"; guard bash "$INSTALL" --project "$PALL" --agents claude --with all >/dev/null 2>&1
+chk "--with all excludes primer"                  '[ ! -d "$PALL/.primer" ] && ! grep -q "primer.js" "$PALL/.claude/settings.json" 2>/dev/null'
+# Full wiring test only when primer is already built + node present (keeps smoke fast/offline).
+if command -v node >/dev/null 2>&1 && [ -f "$ROOT/primer/dist/bin/primer.js" ]; then
+  PW="$(mk)"; guard bash "$INSTALL" --project "$PW" --agents claude --with primer >/dev/null 2>&1
+  chk "primer: policy placed"                     '[ -f "$PW/.claude/rules/primer.md" ]'
+  chk "primer: MCP entry (absolute launcher)"     'grep -q "dist/bin/primer.js" "$PW/.mcp.json"'
+  chk "primer: SessionStart brief hook added"     'grep -q "brief --format json" "$PW/.claude/settings.json"'
+  chk "primer: PostToolUse capture hook added"    'grep -q "signal --stdin" "$PW/.claude/settings.json"'
+  chk "primer: core SessionStart hook intact"     'grep -q "codegraph-session-check.sh" "$PW/.claude/settings.json"'
+  chk "primer: DB initialized"                    '[ -f "$PW/.primer/primer.db" ]'
+  chk "primer: .primer gitignored"                'grep -q ".primer/" "$PW/.gitignore"'
+  chk "primer: claude settings valid JSON"        'vjson "$PW/.claude/settings.json"'
+  guard bash "$UNINSTALL" --project "$PW" --agents claude >/dev/null 2>&1
+  chk "primer: uninstall removes hooks"           '! grep -q "primer.js" "$PW/.claude/settings.json" 2>/dev/null'
+  chk "primer: uninstall removes policy"          '[ ! -f "$PW/.claude/rules/primer.md" ]'
+  chk "primer: uninstall PRESERVES learned DB"    '[ -f "$PW/.primer/primer.db" ]'
+  guard bash "$UNINSTALL" --project "$PW" --agents claude --purge >/dev/null 2>&1
+  chk "primer: --purge deletes the DB"            '[ ! -d "$PW/.primer" ]'
+else
+  echo "  skip primer wiring tests (build first: cd primer && npm ci && npm run build)"
+fi
+
 echo "== project install =="
 P="$(mk)"; guard bash "$INSTALL" --project "$P" >/dev/null 2>&1
 for m in codegraph-session-startup karpathy-guidelines superpowers; do

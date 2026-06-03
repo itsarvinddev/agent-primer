@@ -23,6 +23,38 @@ so agents don't carry context they didn't ask for:
 | `skills` | More skill registries — [Anthropic skills](https://github.com/anthropics/skills) · [skills.sh](https://skills.sh) · [VoltAgent](https://github.com/VoltAgent/awesome-agent-skills) |
 | `agent-extensions` | Each agent's own first-party plugins/skills (Claude marketplaces, `gemini extensions`, Codex `/plugins`, …) |
 
+## ⭐ primer — a coding-style engine for your agents
+
+[`primer`](primer/) is the kit's flagship: a **local-first personal coding-intelligence engine.**
+*What CodeGraph is for code structure, primer is for your coding taste.* It learns your style from
+your own edits and serves it back to every agent over **MCP**, so they write code the way **you** do
+— **100% local: no model, no network, no telemetry.** Published as
+[`@agent-primer/primer`](https://www.npmjs.com/package/@agent-primer/primer) (Node ≥ 22.5).
+
+It runs a continuous loop, entirely on your machine:
+
+1. **Apply** — a `[Primer]` style brief is injected at every session start; agents also pull scoped
+   preferences on demand via `primer_apply`.
+2. **Capture** — a PostToolUse hook pipes each edit to `primer signal`, privacy-gated: secrets,
+   generated, and dependency files are never captured.
+3. **Distill** — when signals accrue, the agent calls `primer_learn`; `web-tree-sitter` parses the
+   before/after across **~22 languages** into *ranked candidate preferences*, and the agent records
+   the durable ones with `primer_record`. (Distillation spends **your** agent's tokens — primer
+   ships no model of its own.)
+4. **Impact** — `primer_impact` reports a file's style facts and which recorded preferences govern
+   it, or a preference's `conflicts` / `supersedes` / `co-occurs` edges.
+
+Six MCP tools — `primer_apply` · `primer_record` · `primer_query` · `primer_learn` ·
+`primer_impact` · `primer_status` — plus a full CLI, over a local SQLite style-graph (WAL + FTS5) in
+a gitignored `.primer/`. The unified installer wires the `[Primer]` brief into Claude / Cursor /
+Gemini / Codex / Antigravity / opencode (Kimi on `--global`; Qoder gets the policy) and edit-capture
+into Claude + Kimi. Details in [primer/DESIGN.md](primer/DESIGN.md) and [primer/README.md](primer/README.md).
+
+```bash
+npx @agent-primer/primer setup --global    # one command: the 3 core policies AND primer
+# …or with the bash/curl kit:  install.sh --global --with primer   (opt-in; needs Node ≥ 22.5)
+```
+
 ## What's in here
 
 | File | Role |
@@ -32,6 +64,7 @@ so agents don't carry context they didn't ask for:
 | `karpathy-policy.md` | Policy #2 — the Karpathy coding guidelines (behavioral; no hook), copied alongside policy #1. |
 | `superpowers-policy.md` | Policy #3 — bootstraps the obra/superpowers plugin + carries its methodology (behavioral; no hook). |
 | `{mcp,tools,rules,skills,agent-extensions}-policy.md` | Five **opt-in** bundle docs — installed only via `--with` (see the bundle table above). |
+| `primer-policy.md` + `primer/` | **`primer`** — a local coding-style engine (its own DB + MCP server), published as `@agent-primer/primer`. `npx @agent-primer/primer setup` installs it + the 3 policies; via bash it's `--with primer` (needs Node, not in `--with all`). See [its DESIGN](primer/DESIGN.md). |
 | `install.sh` | Wires the hook script + policies into agents. `--global`/`--project`, `--agents`, `--with`, `--dry-run`, `--always`, `--version`. Idempotent; refuses to touch unparseable configs; writes atomically. |
 | `uninstall.sh` | Cleanly reverses an install (same flags). Idempotent and safe to run when nothing is installed. |
 | `agent-primer.sh` | **Single self-contained file** — the hook script, the three policies, and install + uninstall inlined. Carry/curl to a new machine (`bash agent-primer.sh --uninstall` removes). |
@@ -67,7 +100,20 @@ immediately, and asks you to restart only so the `codegraph_*` MCP tools load.
 
 ## Install
 
-Whether a person runs it or an AI agent does it for you, agent-primer installs the same way: get the
+### Quickest — `npx` (one command: the 3 core policies **+** primer)
+
+```bash
+npx @agent-primer/primer setup --global           # all projects
+npx @agent-primer/primer setup --project .         # one repo
+# reverse:  npx @agent-primer/primer teardown --global
+```
+
+Needs Node ≥ 22.5 (for primer) plus `bash` + `python3` (the kit is bash-based). Flags like
+`--agents claude,cursor`, `--with mcp,rules`, `--dry-run` pass straight through to the installer.
+
+### Or the curl bundle (no Node needed for the core policies)
+
+Whether a person runs it or an AI agent does it for you, the bash kit installs the same way: get the
 repo (one `curl`, or a clone), then run `install.sh`. Pick your path.
 
 ### For humans
