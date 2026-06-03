@@ -16,19 +16,24 @@
 
 set -u
 
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+PRIMER_JS="$SELF_DIR/primer/dist/bin/primer.js"   # primer launcher (repo layout)
+[ -f "$PRIMER_JS" ] || { [ -f "$SELF_DIR/../dist/bin/primer.js" ] && PRIMER_JS="$SELF_DIR/../dist/bin/primer.js"; }   # bundled-npm layout
 VERSION="0.1.0"
 SCOPE=""
 TARGET=""
 AGENTS="claude,codex,cursor,gemini,opencode,antigravity,kimi,qoder"
 KNOWN_AGENTS="claude codex cursor gemini opencode antigravity kimi qoder"
 DRYRUN=0
+PURGE=0    # --purge also deletes the learned primer style DB (.primer/); default PRESERVES it
 FAILED=0
-MARKERS="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
+MARKERS="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions primer"
 # Standalone rule/skill basenames install.sh writes (core 3 + opt-in bundles). One list, used by
 # every per-agent removal loop (was duplicated 5×). Kimi's codegraph skill dir is the lone exception.
-STANDALONE_NAMES="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
-KIMI_SKILL_NAMES="codegraph-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions"
-HOOK_TAG="codegraph-session-check.sh"   # identifies the hook entries/commands we added
+STANDALONE_NAMES="codegraph-session-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions primer"
+KIMI_SKILL_NAMES="codegraph-startup karpathy-guidelines superpowers agent-primer-mcp agent-primer-tools agent-primer-rules agent-primer-skills agent-primer-extensions primer"
+HOOK_TAG="codegraph-session-check.sh"   # identifies the core hook entries/commands we added
+PRIMER_TAG="primer.js|brief --format|signal --stdin"   # any of these identifies a primer hook (repo/global/npx forms)
 
 usage() {
   cat <<'EOF'
@@ -39,6 +44,7 @@ Usage:
   uninstall.sh --global            remove from your user-level (~/) configs
   uninstall.sh ... --agents a,b    only these agents (comma-separated; default: all)
   uninstall.sh ... --dry-run       show what would happen, change nothing
+  uninstall.sh ... --purge         also delete the primer style DB (.primer/); default keeps it
   uninstall.sh --version           print version and exit
   uninstall.sh -h | --help         show this help
 
@@ -53,6 +59,7 @@ while [ "$#" -gt 0 ]; do
     --agents) AGENTS="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --agents=*) AGENTS="${1#*=}"; shift ;;
     --dry-run) DRYRUN=1; shift ;;
+    --purge) PURGE=1; shift ;;
     --version) echo "agent-primer $VERSION"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "error: unknown arg: $1" >&2; usage >&2; exit 2 ;;
@@ -186,17 +193,17 @@ PY
 }
 
 # Remove our [[hooks]] block (and its leading comment) from Kimi's config.toml.
-unhook_kimi() { # unhook_kimi FILE
-  local file="$1"; [ -f "$file" ] || return 0
+unhook_kimi() { # unhook_kimi FILE [TAG]   (TAG may be a pipe-list of substrings)
+  local file="$1" tag="${2:-$HOOK_TAG}"; [ -f "$file" ] || return 0
   if [ "$DRYRUN" = 1 ]; then note "would remove Kimi hook from $file"; return 0; fi
-  if [ "$HAVE_PY" = 0 ]; then note "python3 not found — remove the [[hooks]] block running $HOOK_TAG from $file by hand"; return 0; fi
-  if CG_FILE="$file" CG_TAG="$HOOK_TAG" "$PY" - <<'PY'
+  if [ "$HAVE_PY" = 0 ]; then note "python3 not found — remove the [[hooks]] block running $tag from $file by hand"; return 0; fi
+  if CG_FILE="$file" CG_TAG="$tag" "$PY" - <<'PY'
 import os, re, sys, tempfile
-f=os.environ["CG_FILE"]; tag=os.environ["CG_TAG"]
+f=os.environ["CG_FILE"]; tag=os.environ["CG_TAG"]; tags=[t for t in tag.split("|") if t]
 txt=open(f,encoding="utf-8").read(); orig=txt
-# Drop an optional leading "# codegraph-session-startup" comment + the [[hooks]] block
-# (up to the next table header or EOF) when that block references our hook.
-def repl(m): return "" if tag in m.group(0) else m.group(0)
+# Drop an optional leading comment + the [[hooks]] block (up to the next table header
+# or EOF) when that block references any of our hook tags.
+def repl(m): return "" if any(t in m.group(0) for t in tags) else m.group(0)
 txt=re.sub(r"(?:^[ \t]*#[^\n]*\n)?^\[\[hooks\]\][^\[]*", repl, txt, flags=re.M)
 if txt==orig: sys.exit(0)
 txt=re.sub(r"\n{3,}", "\n\n", txt).lstrip("\n")
@@ -213,7 +220,55 @@ PY
   else FAILED=1; note "ERROR: failed to remove Kimi hook from $file"; fi
 }
 
-note "uninstall scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN"
+# Remove any hook entry whose command references TAG, from EVERY hooks.* array
+# (SessionStart, sessionStart, PostToolUse). Used to pull the primer hooks.
+unhook_tag() { # unhook_tag FILE TAG
+  local file="$1" tag="$2"; [ -f "$file" ] || return 0
+  if [ "$DRYRUN" = 1 ]; then note "would remove $tag hooks from $file"; return 0; fi
+  if [ "$HAVE_PY" = 0 ]; then note "python3 not found — remove hook entries running $tag from $file by hand"; return 0; fi
+  if CG_FILE="$file" CG_TAG="$tag" "$PY" - <<'PY'
+import os, json, sys, tempfile
+f=os.environ["CG_FILE"]; tag=os.environ["CG_TAG"]
+raw=open(f,encoding="utf-8").read()
+if not raw.strip(): sys.exit(0)
+try: data=json.loads(raw)
+except Exception as ex:
+    sys.stderr.write(f"[agent-primer] {f}: invalid JSON ({ex}); refusing to modify it\n"); sys.exit(2)
+if not isinstance(data, dict): sys.exit(0)
+hooks=data.get("hooks")
+if not isinstance(hooks, dict): sys.exit(0)
+tags=[t for t in tag.split("|") if t]
+def hit(cmd): return any(t in cmd for t in tags)
+def ours(e):
+    if not isinstance(e, dict): return False
+    if hit(str(e.get("command",""))): return True
+    return any(isinstance(h,dict) and hit(str(h.get("command",""))) for h in (e.get("hooks") or []))
+changed=False
+for key in list(hooks.keys()):
+    arr=hooks.get(key)
+    if not isinstance(arr, list): continue
+    new=[e for e in arr if not ours(e)]
+    if len(new)!=len(arr):
+        changed=True
+        if new: hooks[key]=new
+        else: del hooks[key]
+if not changed: sys.exit(0)
+if not hooks: data.pop("hooks", None)
+text=json.dumps(data, indent=2)+"\n"
+d=os.path.dirname(f) or "."; fd,tmp=tempfile.mkstemp(dir=d, prefix=".ap-", suffix=".tmp")
+try:
+    with os.fdopen(fd,"w",encoding="utf-8") as o: o.write(text)
+    os.replace(tmp,f)
+except Exception as ex:
+    try: os.unlink(tmp)
+    except OSError: pass
+    sys.stderr.write(f"[agent-primer] {f}: write failed ({ex})\n"); sys.exit(3)
+PY
+  then note "removed $tag hooks from $file"
+  else FAILED=1; note "ERROR: failed to remove $tag hooks from $file"; fi
+}
+
+note "uninstall scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN  purge=$PURGE"
 
 if selected claude; then
   if [ "$CLAUDE_RULE_MODE" = "append" ]; then strip_markers "$CLAUDE_RULE"
@@ -226,18 +281,42 @@ if selected cursor; then
   unhook_json "$HFILE" cursor
 fi
 if selected gemini; then strip_markers "$GEMINI_INSTR"; unhook_json "$GS" gemini; fi   # leaves context.fileName (harmless, user may rely on it)
-if selected opencode; then rm_path "$OPENCODE_PLUG"; strip_markers "$OPENCODE_INSTR"; fi
+if selected opencode; then rm_path "$OPENCODE_PLUG"; rm_path "${OPENCODE_PLUG%/*}/primer-session-check.js"; strip_markers "$OPENCODE_INSTR"; fi
 if selected antigravity; then
   [ -n "$ANTI_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$ANTI_RULE_DIR/$n.md"; done
   strip_markers "$ANTI_INSTR"; unhook_json "$AH" antigravity
 fi
 if selected kimi; then
   for n in $KIMI_SKILL_NAMES; do rm_path "$KIMI_SKILLS/$n"; done
-  [ "$SCOPE" = "global" ] && unhook_kimi "$KCONF"
+  [ "$SCOPE" = "global" ] && unhook_kimi "$KCONF" "$HOOK_TAG|$PRIMER_TAG"
 fi
 if selected qoder; then
   [ -n "$QODER_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$QODER_RULE_DIR/$n.md"; done
   [ -n "$QODER_INSTR" ] && strip_markers "$QODER_INSTR"
+fi
+
+# --- remove primer wiring (brief/capture hooks + MCP entries); PRESERVE the DB ---
+# primer hooks live alongside the core ones in the same JSON configs — strip by tag from every
+# hooks.* array. MCP entries come out via `primer uninstall`. The learned DB is kept unless --purge.
+selected claude      && unhook_tag "$SETTINGS" "$PRIMER_TAG"
+selected cursor      && unhook_tag "$HFILE" "$PRIMER_TAG"
+selected gemini      && unhook_tag "$GS" "$PRIMER_TAG"
+selected codex       && unhook_tag "$CFILE" "$PRIMER_TAG"
+selected antigravity && unhook_tag "$AH" "$PRIMER_TAG"
+if [ -f "$PRIMER_JS" ] && command -v node >/dev/null 2>&1 && [ "$DRYRUN" = 0 ]; then
+  PRIMER_TARGETS=""
+  for _ag in claude cursor gemini codex opencode; do selected "$_ag" && PRIMER_TARGETS="$PRIMER_TARGETS,$_ag"; done
+  PRIMER_TARGETS="${PRIMER_TARGETS#,}"
+  if [ -n "$PRIMER_TARGETS" ]; then
+    if [ "$SCOPE" = "project" ]; then node "$PRIMER_JS" uninstall --local --cwd "$ROOT" --target "$PRIMER_TARGETS" 2>&1 | sed 's/^/[agent-primer] /'
+    else node "$PRIMER_JS" uninstall --target "$PRIMER_TARGETS" 2>&1 | sed 's/^/[agent-primer] /'; fi
+  fi
+fi
+# The learned style DB is the user's data — preserve it unless --purge.
+PRIMER_DB_DIR="$ROOT/.primer"
+if [ -d "$PRIMER_DB_DIR" ]; then
+  if [ "$PURGE" = 1 ]; then rm_path "$PRIMER_DB_DIR"
+  else note "preserved your learned primer style DB at $PRIMER_DB_DIR (re-run with --purge to delete it)"; fi
 fi
 
 # Remove the kit dir last (it's wholly owned by agent-primer).

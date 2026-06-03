@@ -1,0 +1,15 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# local style DBs (never commit a developer's learned taste)
+*.db
+*.db-shm
+*.db-wal
+.primer/
+
+# npm pack output
+*.tgz
+
+# bundled bash kit (copied from repo root at pack time)
+kit/

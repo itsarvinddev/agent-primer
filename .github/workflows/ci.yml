@@ -28,3 +28,45 @@ jobs:
           ./make-portable.sh
           git diff --exit-code -- agent-primer.sh \
             || { echo "::error::agent-primer.sh is stale — run ./make-portable.sh and commit"; exit 1; }
+
+  # primer (TS/Node) — cross-Node + cross-OS, incl. the Node-floor (22.5.x) path
+  # that needs the launcher's --experimental-sqlite relaunch.
+  primer:
+    name: primer (node ${{ matrix.node }} / ${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node: ['22.5.0', '24', 'latest']
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: primer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm ci
+      - name: test
+        # node:sqlite is gated behind --experimental-sqlite before Node 24; the vitest
+        # process imports it directly, so pass the flag there on older Node.
+        run: |
+          MAJOR=$(node -p "process.versions.node.split('.')[0]")
+          if [ "$MAJOR" -lt 24 ]; then export NODE_OPTIONS="--experimental-sqlite"; fi
+          npm test
+      - name: launcher auto-relaunch (no flag) prints version
+        # No NODE_OPTIONS here on purpose: on Node < 24 this only works if the launcher
+        # re-execs itself with --experimental-sqlite. Proves that path end-to-end.
+        run: node dist/bin/primer.js --version
+      - name: pack ships the bundled kit (install.sh + policy docs)
+        # `primer setup` runs the bundled kit; assert the tarball actually carries it so we
+        # never publish a kitless package (prepack/bundle-kit regression guard).
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 'latest'
+        run: |
+          npm pack >/dev/null 2>&1
+          TGZ="$(ls -t ./*.tgz | head -1)"
+          tar -tzf "$TGZ" | grep -q 'package/kit/install.sh' || { echo "::error::tarball missing kit/install.sh"; exit 1; }
+          tar -tzf "$TGZ" | grep -q 'package/kit/primer-policy.md' || { echo "::error::tarball missing kit/primer-policy.md"; exit 1; }
+          rm -f "$TGZ"
+          echo "kit bundled into tarball OK"
