@@ -29,7 +29,7 @@ so agents don't carry context they didn't ask for:
 *What CodeGraph is for code structure, primer is for your coding taste.* It learns your style from
 your own edits and serves it back to every agent over **MCP**, so they write code the way **you** do
 — **100% local: no model, no network, no telemetry.** Published as
-[`@agent-primer/primer`](https://www.npmjs.com/package/@agent-primer/primer) (Node ≥ 22.5).
+[`@agent-primer/primer`](https://www.npmjs.com/package/@agent-primer/primer) (Node ≥ 24).
 
 It runs a continuous loop, entirely on your machine:
 
@@ -52,7 +52,7 @@ into Claude + Kimi. Details in [primer/DESIGN.md](primer/DESIGN.md) and [primer/
 
 ```bash
 npx @agent-primer/primer setup --global    # one command: the 3 core policies AND primer
-# …or with the bash/curl kit:  install.sh --global --with primer   (opt-in; needs Node ≥ 22.5)
+# …or with the bash/curl kit:  install.sh --global --with primer   (opt-in; needs Node ≥ 24)
 ```
 
 ## What's in here
@@ -108,7 +108,7 @@ npx @agent-primer/primer setup --project .         # one repo
 # reverse:  npx @agent-primer/primer teardown --global
 ```
 
-Needs Node ≥ 22.5 (for primer) plus `bash` + `python3` (the kit is bash-based). Flags like
+Needs Node ≥ 24 (for primer) plus `bash` + `python3` (the kit is bash-based). Flags like
 `--agents claude,cursor`, `--with mcp,rules`, `--dry-run` pass straight through to the installer.
 
 ### Or the curl bundle (no Node needed for the core policies)

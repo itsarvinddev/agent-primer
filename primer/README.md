@@ -9,8 +9,8 @@ primer is for your coding taste.*
 > standalone via npm. See [DESIGN.md](DESIGN.md) for the architecture and the learning loop.
 
 ## Requirements
-- Node ≥ 22.5 (uses the built-in `node:sqlite`; the launcher handles the
-  `--experimental-sqlite` flag automatically on Node 22.5–23.x).
+- Node ≥ 24 (uses the built-in `node:sqlite`, including its bundled **FTS5** module —
+  which Node ships from v24; node:sqlite needs no flag on Node 24+).
 
 ## Install
 ```sh

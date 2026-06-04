@@ -29,15 +29,15 @@ jobs:
           git diff --exit-code -- agent-primer.sh \
             || { echo "::error::agent-primer.sh is stale — run ./make-portable.sh and commit"; exit 1; }
 
-  # primer (TS/Node) — cross-Node + cross-OS, incl. the Node-floor (22.5.x) path
-  # that needs the launcher's --experimental-sqlite relaunch.
+  # primer (TS/Node) — cross-Node + cross-OS. Floor is Node 24: node:sqlite ships the
+  # FTS5 module from v24 (older Node lacks it), and node:sqlite needs no flag on 24+.
   primer:
     name: primer (node ${{ matrix.node }} / ${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node: ['22.5.0', '24', 'latest']
+        node: ['24', 'latest']
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -49,15 +49,8 @@ jobs:
           node-version: ${{ matrix.node }}
       - run: npm ci
       - name: test
-        # node:sqlite is gated behind --experimental-sqlite before Node 24; the vitest
-        # process imports it directly, so pass the flag there on older Node.
-        run: |
-          MAJOR=$(node -p "process.versions.node.split('.')[0]")
-          if [ "$MAJOR" -lt 24 ]; then export NODE_OPTIONS="--experimental-sqlite"; fi
-          npm test
-      - name: launcher auto-relaunch (no flag) prints version
-        # No NODE_OPTIONS here on purpose: on Node < 24 this only works if the launcher
-        # re-execs itself with --experimental-sqlite. Proves that path end-to-end.
+        run: npm test
+      - name: launcher prints version (smoke)
         run: node dist/bin/primer.js --version
       - name: pack ships the bundled kit (install.sh + policy docs)
         # `primer setup` runs the bundled kit; assert the tarball actually carries it so we

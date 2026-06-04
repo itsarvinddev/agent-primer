@@ -4,7 +4,7 @@ primer is a local-first personal coding-intelligence engine wired by agent-prime
 `--with primer`. It learns your personal coding style from your edits and serves it over **MCP**,
 so the agent writes code the way **you** do. 100% local — no model, no network, no telemetry.
 *What CodeGraph is for code structure, primer is for your coding taste.* Opt-in via
-`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 22.5.
+`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 24.
 
 ## Use the `primer_*` MCP tools (available after a restart)
 - **Before** writing or editing code, call **`primer_apply`** (pass language/context) and apply the

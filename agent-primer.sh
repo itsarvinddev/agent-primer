@@ -555,7 +555,7 @@ primer is a local-first personal coding-intelligence engine wired by agent-prime
 `--with primer`. It learns your personal coding style from your edits and serves it over **MCP**,
 so the agent writes code the way **you** do. 100% local — no model, no network, no telemetry.
 *What CodeGraph is for code structure, primer is for your coding taste.* Opt-in via
-`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 22.5.
+`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 24.
 
 ## Use the `primer_*` MCP tools (available after a restart)
 - **Before** writing or editing code, call **`primer_apply`** (pass language/context) and apply the
@@ -653,7 +653,7 @@ Usage:
   install.sh ... --dry-run       show what would happen, write nothing
   install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
   install.sh ... --with a,b      also install opt-in bundles: mcp, tools, rules, skills, agent-extensions (or 'all')
-  install.sh ... --with primer   wire the local coding-style engine (Node>=22.5; not in 'all')
+  install.sh ... --with primer   wire the local coding-style engine (Node>=24; not in 'all')
   install.sh --version           print version and exit
   install.sh -h | --help         show this help
 
@@ -923,10 +923,10 @@ PY
   else FAILED=1; note "could not add PostToolUse hook to $file (left untouched)"; fi
 }
 
-# Node >= 22.5 (primer needs the built-in node:sqlite).
+# Node >= 24 (primer needs node:sqlite WITH the bundled FTS5 module, which ships from Node 24).
 primer_node_ok() {
   command -v node >/dev/null 2>&1 || return 1
-  node -e 'var v=process.versions.node.split(".").map(Number);process.exit((v[0]>22||(v[0]===22&&v[1]>=5))?0:1)' >/dev/null 2>&1
+  node -e 'process.exit(Number(process.versions.node.split(".")[0])>=24?0:1)' >/dev/null 2>&1
 }
 
 # Idempotently gitignore the local style DB.
@@ -1243,7 +1243,7 @@ if policy_on primer; then
 
   if [ -z "$PRIMER_KIND" ]; then
     if [ "$DRYRUN" = 1 ]; then note "would resolve primer (installed CLI / repo build / npm i -g $PRIMER_PKG) and wire it."
-    else note "primer: could not resolve a runnable primer. Install once: npm i -g $PRIMER_PKG (needs Node>=22.5), then re-run with --with primer. Ad-hoc: npx $PRIMER_PKG"; fi
+    else note "primer: could not resolve a runnable primer. Install once: npm i -g $PRIMER_PKG (needs Node>=24), then re-run with --with primer. Ad-hoc: npx $PRIMER_PKG"; fi
   elif [ "$DRYRUN" = 1 ]; then
     note "would init the style DB, register the MCP server, distribute primer-policy.md, and wire the [Primer] brief + capture hooks via: $PRIMER_INVOKE"
   else

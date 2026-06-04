@@ -63,10 +63,10 @@ TypeScript/Node, mirroring CodeGraph's proven stack — **zero native build, no 
 
 | Concern | Choice | Notes |
 |---|---|---|
-| Store | `node:sqlite` (WAL + FTS5) | built into Node ≥ 22.5; no `better-sqlite3` |
+| Store | `node:sqlite` (WAL + FTS5) | built into Node ≥ 24 (the bundled SQLite ships FTS5 from v24); no `better-sqlite3` |
 | MCP | `@modelcontextprotocol/sdk` over **stdio** | raw `Server` + JSON-Schema tools (no zod) |
 | CLI | `commander` | `init/status/record/show/brief/query/list/forget/signal/learn/install/serve` |
-| Launcher | `src/bin/primer.ts` | adds `--experimental-sqlite` + `NODE_NO_WARNINGS` only when needed (Node 22.5–23.x); **stdout is JSON-RPC only** in `serve --mcp` |
+| Launcher | `src/bin/primer.ts` | re-execs with `--experimental-sqlite` + `NODE_NO_WARNINGS` only if an older Node needs it (a no-op on Node 24+); **stdout is JSON-RPC only** in `serve --mcp` |
 
 ### Data dir
 primer owns `<git-root>/.primer/primer.db` (project, gitignored) and `~/.primer/primer.db`
@@ -133,7 +133,7 @@ impact; code-structure impact — callers/callees — would reuse CodeGraph and 
 - **Stage D — Distribution** ✅ *(published)* — live on npm as
   [`@agent-primer/primer`](https://www.npmjs.com/package/@agent-primer/primer); `npx @agent-primer/primer`
   runs from a clean install (deps + WASM grammars resolve, no repo). The kit's `--with primer` resolves
-  primer via an installed CLI > repo build > `npm i -g`, and CI runs the suite on Node 22.5/24/latest ×
+  primer via an installed CLI > repo build > `npm i -g`, and CI runs the suite on Node 24/latest ×
   ubuntu+macOS. *Remaining:* a bundled-Node single binary, and a `1.0` milestone against
   the bar below.
 
@@ -141,7 +141,7 @@ impact; code-structure impact — callers/callees — would reuse CodeGraph and 
 The package (`@agent-primer/primer`, scoped) ships only `dist` + docs; `tree-sitter-wasms`,
 `@modelcontextprotocol/sdk`, `commander`, and `web-tree-sitter` are runtime deps resolved on install,
 so the WASM grammars come from the installed dependency (no vendoring). `node:sqlite` is built into
-Node ≥ 22.5. To use without the repo: `npm i @your-scope/primer` (after publishing) or
+Node ≥ 24 (with FTS5). To use without the repo: `npm i @agent-primer/primer` or
 `npm i ./agent-primer-primer-*.tgz` from a local `npm pack`.
 
 ## The bar to `1.0` (when all hold)
@@ -149,7 +149,7 @@ Node ≥ 22.5. To use without the repo: `npm i @your-scope/primer` (after publis
   round-trips by a target %** on a fixed rubric.
 - Distillation costs **≤ a set token budget per session**.
 - **Zero P0/P1 regressions** to the core agent-primer kit over a 2-week dogfood.
-- Stages A–C complete with green tests on Node 22.5–latest.
+- Stages A–C complete with green tests on Node 24–latest.
 
 ## Non-goals (v1)
 No cloud/sync, no telemetry, no ML model, no IDE-signal capture, no 20-language AST yet, no

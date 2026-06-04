@@ -1,11 +1,11 @@
 {
   "name": "@agent-primer/primer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "primer — a local-first personal coding-intelligence engine. Learns your coding taste from your edits and serves it to AI agents over MCP, fully local (no model, no network, no telemetry).",
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=24.0.0"
   },
   "bin": {
     "primer": "dist/bin/primer.js"
