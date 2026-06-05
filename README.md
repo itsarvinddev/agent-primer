@@ -176,7 +176,7 @@ Available optional bundles:
 | `rules` | Security, 12-Factor Agents, and commit/PR hygiene guidance |
 | `skills` | Extra public skill registries |
 | `agent-extensions` | Agent-specific extension and plugin guidance |
-| `primer` | The local Primer coding-style engine; requires Node 24 or newer |
+| `primer` | The local Primer coding-style engine; requires Node 22.13 or newer |
 
 `--with all` installs the general optional bundles, but not `primer`. Primer is separate because it
 has a Node requirement.

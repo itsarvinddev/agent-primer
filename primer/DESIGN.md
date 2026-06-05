@@ -66,7 +66,7 @@ TypeScript/Node, mirroring CodeGraph's proven stack — **zero native build, no 
 | Store | `node:sqlite` (WAL + optional FTS5) | built into Node ≥ 22.13; no native npm module. If FTS5 is unavailable, Primer falls back to table-scan search/dedup over the small local preference set. |
 | MCP | `@modelcontextprotocol/sdk` over **stdio** | raw `Server` + JSON-Schema tools (no zod) |
 | CLI | `commander` | `init/status/record/show/brief/query/list/forget/signal/learn/install/serve` |
-| Launcher | `src/bin/primer.ts` | re-execs with `--experimental-sqlite` + `NODE_NO_WARNINGS` only if an older Node needs it (a no-op on Node 24+); **stdout is JSON-RPC only** in `serve --mcp` |
+| Launcher | `src/bin/primer.ts` | re-execs with `--experimental-sqlite` + `NODE_NO_WARNINGS` only if an older Node needs it; **stdout is JSON-RPC only** in `serve --mcp` |
 
 ### Data dir
 primer owns `<git-root>/.primer/primer.db` (project, gitignored) and `~/.primer/primer.db`
@@ -133,8 +133,8 @@ impact; code-structure impact — callers/callees — would reuse CodeGraph and 
 - **Stage D — Distribution** ✅ *(published)* — live on npm as
   [`@agent-primer/primer`](https://www.npmjs.com/package/@agent-primer/primer); `npx @agent-primer/primer`
   runs from a clean install (deps + WASM grammars resolve, no repo). The kit's `--with primer` resolves
-  primer via an installed CLI > repo build > `npm i -g`, and CI runs the suite on Node 24/latest ×
-  ubuntu+macOS. *Remaining:* a bundled-Node single binary, and a `1.0` milestone against
+  primer via an installed CLI > repo build > `npm i -g`, and CI runs the suite on Node 22.13/latest
+  across ubuntu+macOS. *Remaining:* a bundled-Node single binary, and a `1.0` milestone against
   the bar below.
 
 ## Distribution
@@ -149,7 +149,7 @@ Node ≥ 22.13; FTS5 is used opportunistically. To use without the repo: `npm i 
   round-trips by a target %** on a fixed rubric.
 - Distillation costs **≤ a set token budget per session**.
 - **Zero P0/P1 regressions** to the core agent-primer kit over a 2-week dogfood.
-- Stages A–C complete with green tests on Node 24–latest.
+- Stages A–C complete with green tests on Node 22.13–latest.
 
 ## Non-goals (v1)
 No cloud/sync, no telemetry, no ML model, no IDE-signal capture, no 20-language AST yet, no

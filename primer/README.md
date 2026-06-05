@@ -1,83 +1,145 @@
 # primer
 
-A local-first personal coding-intelligence engine: it learns your coding style from your
-edits and serves it to AI coding agents over MCP, so they write code the way *you* do.
-100% local — no model, no network, no telemetry. *What CodeGraph is for code structure,
-primer is for your coding taste.*
+Primer is local coding-style memory for AI coding agents.
 
-> Ships in the agent-primer kit (`--with primer`, or `npx @agent-primer/primer setup`) or
-> standalone via npm. See [DESIGN.md](DESIGN.md) for the architecture and the learning loop.
+It learns durable preferences from your edits and corrections, stores them on your machine, and
+serves them back to agents through MCP so future code feels closer to the way you like to write it.
+There is no cloud service, no bundled model, no telemetry, and no network sync.
 
-## Requirements
-- Node ≥ 22.13. Primer uses the built-in `node:sqlite` module. When the local Node build exposes
-  FTS5, Primer uses it for faster search and near-duplicate checks; otherwise it falls back to a
-  normal table scan over the small local preference set.
+Primer is part of the Agent-Primer project, but it can also be installed directly from npm.
 
-## Install
-```sh
-npx @agent-primer/primer setup --global   # wire primer + the 3 core policies into your agents
-npm i -g @agent-primer/primer             # …or just the `primer` CLI
-npx @agent-primer/primer --help           # …or run ad-hoc, no install
+## Why Use It
+
+AI coding agents can understand a repository, but they do not automatically remember your personal
+taste across tools and sessions. Primer gives them a small local memory for things like:
+
+- which test runner you prefer
+- how you like imports organized
+- naming and formatting habits
+- when you prefer explicit types
+- how much commenting or docstring detail you want
+- project or language-specific style preferences
+
+Think of it this way: CodeGraph helps agents understand code structure; Primer helps agents remember
+your coding style.
+
+## Quick Start
+
+Install Primer and the core Agent-Primer setup for all supported agents:
+
+```bash
+npx @agent-primer/primer setup --global
 ```
 
-`primer setup` is npm-native and does not require `bash`, so it works on Windows, macOS, and Linux.
-The curl/bash agent-primer kit is still available for core-policy-only installs.
+Install only for the current project:
 
-## Use
-```sh
-primer init                 # create the style-graph (.primer/primer.db)
-primer install              # register the MCP server into detected agents
-                            # (restart your agent so primer_* tools load)
+```bash
+npx @agent-primer/primer setup --project .
+```
+
+After setup, restart your agent or IDE so the `primer_*` MCP tools can load.
+
+Requirement: Node 22.13 or newer. The npm setup path is native Node and does not require `bash`, so
+it works on Windows, macOS, and Linux.
+
+## What Setup Does
+
+`primer setup` wires two things:
+
+- **Agent-Primer basics**: shared agent instructions for CodeGraph setup, careful coding habits, and
+  the Superpowers methodology.
+- **Primer style memory**: a local database, MCP server config, and startup hooks that give agents a
+  short `[Primer]` style brief each session.
+
+If you run setup with `npx`, any persistent hook or MCP entry is written so it can resolve Primer
+again later instead of pointing at npm's temporary cache.
+
+## Day-To-Day Use
+
+Most of the time, you just use your agent normally.
+
+When you state a durable preference, an agent with Primer enabled can record it. You can also record
+one yourself:
+
+```bash
 primer record --category testing --statement "Use vitest for unit tests" --language typescript
-primer show                 # the merged style brief
-primer learn                # bounded digest of pending edit-signals
+```
+
+See what Primer will tell agents:
+
+```bash
+primer show
+```
+
+Check local health:
+
+```bash
+primer status
+```
+
+## How Agents Use Primer
+
+After restart, agents can use these MCP tools:
+
+| Tool | Purpose |
+|---|---|
+| `primer_apply` | Fetch relevant preferences before editing |
+| `primer_record` | Store a durable user preference |
+| `primer_query` | Search saved preferences |
+| `primer_learn` | Turn recent local edit signals into candidate preferences |
+| `primer_impact` | Show style facts for a file or relationships for a preference |
+| `primer_status` | Report local style-memory health |
+
+The startup hook can also inject a short `[Primer]` brief automatically, so agents get useful style
+context even before they decide to call a tool.
+
+## Common Commands
+
+```bash
+primer init
+primer record --category testing --statement "Use vitest for unit tests"
+primer show
+primer query vitest
+primer learn
 primer impact --file src/app.ts
 primer status -j
 ```
 
-## Build from source (dev)
-```sh
-npm ci && npm run build      # -> dist/bin/primer.js
-npm test                     # 38 tests incl. a spawned-stdio MCP test + multi-language AST
+Run any command with `--help` for options.
+
+## Uninstall
+
+Remove the global setup:
+
+```bash
+npx @agent-primer/primer teardown --global
 ```
 
-### How agents use it
-- **Apply** — a SessionStart hook injects a bounded `[Primer]` brief every session; `primer_apply`
-  (MCP) fetches scoped preferences on demand.
-- **Capture** — a PostToolUse hook pipes each edit to `primer signal` (privacy-gated; secrets and
-  generated/dependency files are never captured).
-- **Distill** — when signals accrue, the agent calls `primer_learn` and records the durable ones
-  with `primer_record`. Distillation uses *your* agent's tokens; it's opt-in and throttled.
+Remove a project setup:
 
-## Commands
-`init` · `status` · `record` · `show` · `brief` · `query` · `list` · `forget` · `signal` ·
-`learn` · `impact` · `install` / `uninstall` · `serve --mcp`. Run any with `--help`.
-
-```sh
-node dist/bin/primer.js impact --file src/app.ts   # the file's AST style facts + governing prefs
-node dist/bin/primer.js impact --id 3              # a preference's conflicts/supersedes/co-occurs
+```bash
+npx @agent-primer/primer teardown --project .
 ```
 
-## AST observations (Stage C)
-Edit-signals are parsed with `web-tree-sitter` across **~22 languages** (TS/TSX/JS/Python/Go/Rust/
-Java/C/C++/C#/Ruby/PHP/Swift/Kotlin/Scala/Lua/Bash/Elixir/OCaml/Objective-C/Solidity) into structured
-observations. Universal markers (**identifier-naming case** — camelCase/snake_case/PascalCase/
-UPPER_SNAKE for value vs type names — plus quotes and comments) work for every language; rich markers
-(var→const, type annotations, async/await vs `.then`, import style, try/catch, docstrings) apply to
-TS/JS/Python. `primer learn` aggregates them into **ranked candidate preferences**, so the agent
-records evidence-backed rules. Grammars are loaded lazily (only by `learn`/`impact`), so
-`signal`/`brief`/`record` stay fast.
-
-## Install without the repo (npx-ready)
-The published package ships `dist` + docs + the bundled agent-primer kit; its deps (incl. the WASM
-grammars via `tree-sitter-wasms`) resolve on install, so it runs standalone — no clone needed:
-```sh
-npx @agent-primer/primer setup --global   # wire primer + the core policies into your agents
-npm i -g @agent-primer/primer             # …or just the CLI
-```
-To hack on it locally: `npm pack` then `npm i ./agent-primer-primer-*.tgz`.
+Primer keeps your learned style database by default. Use `--purge` if you also want to delete the
+local `.primer/` or `~/.primer/` database.
 
 ## Privacy
-The DB lives in a gitignored `.primer/` (project) or `~/.primer/` (global). Signals only ever
-come from recognized source files, exclude secrets/generated/dependency files, and have their
-excerpts secret-scrubbed and size-capped. Nothing is transmitted anywhere.
+
+Primer stores data locally in `.primer/` for a project or `~/.primer/` globally. It skips common
+secret, dependency, build, and generated files. Captured excerpts are size-capped and scrubbed for
+secret-looking values. Nothing is sent to a server.
+
+## For Developers
+
+Build and test from source:
+
+```bash
+npm ci
+npm test
+```
+
+The package ships compiled `dist/`, docs, and the bundled Agent-Primer kit, so npm users do not need
+to clone this repository.
+
+More technical detail lives in [DESIGN.md](DESIGN.md).
