@@ -843,7 +843,10 @@ export async function runCodegraphCheck(args: string[]): Promise<void> {
     emitHook(
       format,
       `[CodeGraph] The \`codegraph\` CLI is NOT installed in this environment.
-Do NOT leave this as a passive note. Ask the user this direct yes/no question before substantive work:
+Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
+prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
+command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
+direct yes/no question in chat:
 
   CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
     ${codegraphInstallText()}
@@ -861,7 +864,10 @@ If the user says no, proceed without CodeGraph and mention that structural code 
       format,
       `[CodeGraph] CLI present, but this project is NOT initialized (no .codegraph/ at
 ${projectDir}).
-Do NOT leave this as a passive note. Ask the user this direct yes/no question before substantive work:
+Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
+prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
+command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
+direct yes/no question in chat:
 
   CodeGraph is installed, but this repo is not indexed yet. Want me to run \`codegraph init -i\` now?
 

@@ -33,7 +33,7 @@ if command -v codegraph >/dev/null 2>&1; then
   chk "--always: prints index-present block"      'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM" --always 2>/dev/null | grep -q "Index present"'
   OM2="$(mk)"
   chk "not set up: still nudges codegraph init"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -q "codegraph init -i"'
-  chk "not set up: asks direct yes/no question"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "Want me to run" | grep -F "codegraph init -i" >/dev/null'
+  chk "not set up: asks through prompt dialog"    'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "prompt/confirmation dialog" >/dev/null && guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "Want me to run" >/dev/null'
 else
   echo "  skip branch-2/3 hook tests (no codegraph CLI on PATH)"
 fi
@@ -161,13 +161,10 @@ else
 fi
 
 echo "== bundle is not drifted from make-portable.sh =="
+BP="$(mk)/agent-primer.before"; cp "$ROOT/agent-primer.sh" "$BP"
 ( cd "$ROOT" && ./make-portable.sh >/dev/null 2>&1 ); dr=$?
 chk "make-portable.sh succeeds"           '[ "$dr" = "0" ]'
-if [ -d "$ROOT/.git" ]; then
-  chk "agent-primer.sh has no uncommitted drift" '( cd "$ROOT" && git diff --quiet -- agent-primer.sh 2>/dev/null )'
-else
-  echo "  skip drift-vs-git (not a git checkout)"
-fi
+chk "agent-primer.sh regenerated without drift" 'cmp -s "$BP" "$ROOT/agent-primer.sh"'
 
 echo
 echo "RESULT: $PASS passed, $FAIL failed"

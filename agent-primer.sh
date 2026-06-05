@@ -110,7 +110,10 @@ emit() {
 
 if ! command -v codegraph >/dev/null 2>&1; then
   emit "[CodeGraph] The \`codegraph\` CLI is NOT installed in this environment.
-Do NOT leave this as a passive note. Ask the user this direct yes/no question before substantive work:
+Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
+prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
+command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
+direct yes/no question in chat:
 
   CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
     ${INSTALL_SH}
@@ -126,7 +129,10 @@ fi
 if [ ! -d "$PROJECT_DIR/.codegraph" ]; then
   emit "[CodeGraph] CLI present, but this project is NOT initialized (no .codegraph/ at
 ${PROJECT_DIR}).
-Do NOT leave this as a passive note. Ask the user this direct yes/no question before substantive work:
+Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
+prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
+command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
+direct yes/no question in chat:
 
   CodeGraph is installed, but this repo is not indexed yet. Want me to run \`codegraph init -i\` now?
 
@@ -172,8 +178,9 @@ package). By default it runs in **once-per-project** mode: it injects a `[CodeGr
 once the project is indexed it goes **silent**. So:
 
 - **A `[CodeGraph]` setup block IS present →** the project isn't set up yet; follow it (and the
-  decision tree below) before starting the task. If setup needs user consent, ask the direct yes/no
-  question from the block immediately; do not bury it as "let me know if you want."
+  decision tree below) before starting the task. If setup needs user consent, ask immediately with
+  the host's structured prompt/confirmation dialog when one is available; do not bury it as "let me
+  know if you want."
 - **No `[CodeGraph]` block appears (in a hook-wired repo) →** the project is **already set up — just
   proceed**, and prefer `codegraph_*` tools. Do **not** re-run `codegraph init`/`status` "to be safe":
   the file-watcher keeps the index fresh, and re-checking every session is the noise this mode removes.
@@ -186,6 +193,12 @@ once the project is indexed it goes **silent**. So:
 ---
 
 ## The one-time setup decision tree (first time you work in a project)
+
+When one of the steps below needs consent, prefer a structured prompt dialog over a plain assistant
+message. Use the same kind of user-choice UI your host uses for permissions, command approvals, or
+explicit user input (for example a `request_user_input` / confirm-style tool when available), with a
+clear Yes option and a No option. Fall back to a concise chat question only when no such dialog tool
+exists.
 
 1. **Is the `codegraph` CLI installed?** — `command -v codegraph` (or `codegraph --version`).
    - **No →** ask the user this exact simple question, then install if they say yes:
@@ -210,8 +223,8 @@ may be weaker.
 ## Installing from scratch (when the CLI is missing)
 
 You may install and set CodeGraph up when the user says yes. **Ask directly; do not wait for the user
-to infer what to do from a passive note.** Then announce each command before running it (it touches
-the user's machine), in order:
+to infer what to do from a passive note. Use a prompt dialog when your host exposes one.** Then
+announce each command before running it (it touches the user's machine), in order:
 
 | Step | Command | Purpose |
 |---|---|---|
@@ -245,7 +258,8 @@ Registering the MCP server (`codegraph install`) makes the `codegraph_*` **MCP t
 ## Don'ts
 
 - **Don't be passive when setup is missing.** Do not say "I won't set it up unless you want me to" or
-  "flag it if you'd like." Ask the direct yes/no setup question immediately, then act on the answer.
+  "flag it if you'd like." Ask the direct setup question immediately, preferably via a prompt dialog,
+  then act on the answer.
 - **Don't re-run the setup check once the project is already indexed.** A missing `[CodeGraph]` hook
   block in a wired repo means "set up — proceed," not "re-check"; re-running `init`/`status` every
   session is exactly the noise once-mode removes. Trust the file-watcher (or install with `--always`).
