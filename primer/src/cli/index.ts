@@ -61,44 +61,50 @@ function count(db: DatabaseSync, sql: string): number {
   return r ? Number(Object.values(r)[0]) : 0;
 }
 
-async function runKit(sub: 'setup' | 'teardown', args: string[]): Promise<void> {
-  const { spawnSync } = await import('node:child_process');
-  const { existsSync } = await import('node:fs');
-  const { dirname, join } = await import('node:path');
-  const { fileURLToPath } = await import('node:url');
-  const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..'); // dist/cli -> dist -> package root
-  const which = sub === 'setup' ? 'install' : 'uninstall';
-  const script = [join(pkgRoot, 'kit', `${which}.sh`), join(pkgRoot, '..', `${which}.sh`)].find((p) => existsSync(p));
-  if (!script) {
-    info(`primer ${sub}: could not find the kit (${which}.sh) — reinstall @agent-primer/primer.`);
-    process.exitCode = 1;
-    return;
-  }
-  // `setup` wires primer by default (you already have the Node app); everything else passes through.
-  const finalArgs = sub === 'setup' && !args.some((a) => a === '--with' || a.startsWith('--with=')) ? [...args, '--with', 'primer'] : args;
-  const r = spawnSync('bash', [script, ...finalArgs], { stdio: 'inherit' });
-  if (r.error && (r.error as NodeJS.ErrnoException).code === 'ENOENT') {
-    info('primer setup needs `bash` (the agent-primer kit is bash-based). On Windows, use WSL or Git Bash.');
-    process.exitCode = 1;
-    return;
-  }
-  process.exitCode = r.status ?? 1;
-}
-
 export async function run(argv: string[]): Promise<void> {
-  // `setup`/`teardown` run the bundled agent-primer bash kit (3 core policies + primer).
+  // `setup`/`teardown` wire the bundled agent-primer kit natively in Node, so the npm
+  // package works on Windows too. The bash kit remains available for the curl installer.
   const sub = argv[2];
-  if (sub === 'setup' || sub === 'teardown') {
-    await runKit(sub, argv.slice(3));
+  if (sub === 'setup') {
+    const { runSetup } = await import('../kit/setup.js');
+    try {
+      await runSetup(argv.slice(3));
+    } catch (e) {
+      if (e instanceof PrimerError) info(`primer setup: ${e.message}`);
+      else info(`primer setup: ${(e as Error).stack ?? String(e)}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (sub === 'teardown') {
+    const { runTeardown } = await import('../kit/setup.js');
+    try {
+      await runTeardown(argv.slice(3));
+    } catch (e) {
+      if (e instanceof PrimerError) info(`primer teardown: ${e.message}`);
+      else info(`primer teardown: ${(e as Error).stack ?? String(e)}`);
+      process.exitCode = 1;
+    }
+    return;
+  }
+  if (sub === 'codegraph-check') {
+    const { runCodegraphCheck } = await import('../kit/setup.js');
+    try {
+      await runCodegraphCheck(argv.slice(3));
+    } catch (e) {
+      info(`primer codegraph-check: ${(e as Error).message}`);
+      process.exitCode = 0;
+    }
     return;
   }
   const program = new Command();
   program.name('primer').description('Local-first personal coding-intelligence engine.').version(VERSION);
   program.addHelpText(
     'after',
-    '\nKit setup (runs the bundled agent-primer bash kit; needs bash + python3):\n' +
+    '\nKit setup (wires the bundled agent-primer kit; no bash required from npm):\n' +
       '  primer setup [--global | --project DIR]    wire the 3 core policies + primer into your agents\n' +
-      '  primer teardown [--global | --project DIR] reverse it',
+      '  primer teardown [--global | --project DIR] reverse it\n' +
+      '  primer codegraph-check --format text       internal SessionStart hook command',
   );
 
   const withDbOpts = (c: Command): Command =>

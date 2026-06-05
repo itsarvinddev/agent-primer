@@ -9,8 +9,9 @@ primer is for your coding taste.*
 > standalone via npm. See [DESIGN.md](DESIGN.md) for the architecture and the learning loop.
 
 ## Requirements
-- Node ≥ 24 (uses the built-in `node:sqlite`, including its bundled **FTS5** module —
-  which Node ships from v24; node:sqlite needs no flag on Node 24+).
+- Node ≥ 22.13. Primer uses the built-in `node:sqlite` module. When the local Node build exposes
+  FTS5, Primer uses it for faster search and near-duplicate checks; otherwise it falls back to a
+  normal table scan over the small local preference set.
 
 ## Install
 ```sh
@@ -18,6 +19,9 @@ npx @agent-primer/primer setup --global   # wire primer + the 3 core policies in
 npm i -g @agent-primer/primer             # …or just the `primer` CLI
 npx @agent-primer/primer --help           # …or run ad-hoc, no install
 ```
+
+`primer setup` is npm-native and does not require `bash`, so it works on Windows, macOS, and Linux.
+The curl/bash agent-primer kit is still available for core-policy-only installs.
 
 ## Use
 ```sh
@@ -65,8 +69,8 @@ records evidence-backed rules. Grammars are loaded lazily (only by `learn`/`impa
 `signal`/`brief`/`record` stay fast.
 
 ## Install without the repo (npx-ready)
-The published package ships `dist` + docs + the bundled bash kit; its deps (incl. the WASM grammars
-via `tree-sitter-wasms`) resolve on install, so it runs standalone — no clone needed:
+The published package ships `dist` + docs + the bundled agent-primer kit; its deps (incl. the WASM
+grammars via `tree-sitter-wasms`) resolve on install, so it runs standalone — no clone needed:
 ```sh
 npx @agent-primer/primer setup --global   # wire primer + the core policies into your agents
 npm i -g @agent-primer/primer             # …or just the CLI

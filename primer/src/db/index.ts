@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { PrimerError, nowIso } from '../types.js';
-import { SCHEMA_SQL, SCHEMA_VERSION } from './schema.js';
+import { BASE_SCHEMA_SQL, FTS_SCHEMA_SQL, SCHEMA_VERSION } from './schema.js';
 
 // node:sqlite is a newer builtin that bundlers (vite/vitest) don't auto-externalize.
 // Load it via a runtime require (specifier in a variable) so Node resolves it, never
@@ -33,10 +33,9 @@ function schemaVersion(db: DatabaseSync): number {
 }
 
 export function setMeta(db: DatabaseSync, key: string, value: string): void {
-  db.prepare('INSERT INTO primer_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(
-    key,
-    value,
-  );
+  db.prepare(
+    'INSERT INTO primer_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value WHERE primer_meta.value <> excluded.value',
+  ).run(key, value);
 }
 
 export function getMeta(db: DatabaseSync, key: string): string | null {
@@ -44,13 +43,31 @@ export function getMeta(db: DatabaseSync, key: string): string | null {
   return row ? String(row.value) : null;
 }
 
-/** Create schema on a fresh DB; no-op (no writes) once current. */
+export function hasFts(db: DatabaseSync): boolean {
+  try {
+    return Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'preferences_fts'").get());
+  } catch {
+    return false;
+  }
+}
+
+function ensureFts(db: DatabaseSync): boolean {
+  try {
+    db.exec(FTS_SCHEMA_SQL);
+    return hasFts(db);
+  } catch {
+    return hasFts(db);
+  }
+}
+
+/** Create schema on a fresh DB; keeps FTS5 optional for wider Node compatibility. */
 function ensureSchema(db: DatabaseSync): void {
   const v = schemaVersion(db);
-  if (v >= SCHEMA_VERSION) return;
-  db.exec(SCHEMA_SQL);
+  db.exec(BASE_SCHEMA_SQL);
+  const fts = ensureFts(db);
   if (v === 0) setMeta(db, 'created_at', nowIso());
-  setMeta(db, 'schema_version', String(SCHEMA_VERSION));
+  if (v < SCHEMA_VERSION) setMeta(db, 'schema_version', String(SCHEMA_VERSION));
+  setMeta(db, 'fts5', fts ? 'enabled' : 'unavailable');
 }
 
 /**

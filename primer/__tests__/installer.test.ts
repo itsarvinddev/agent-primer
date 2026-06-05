@@ -4,6 +4,7 @@ import { join } from 'node:path';
 // Import the BUILT installer so import.meta.url resolves the launcher the same way
 // it does in production (dist/installer -> dist/bin/primer.js).
 import { entryForScript, runInstall, runUninstall } from '../dist/installer/index.js';
+import { runSetup, runTeardown } from '../dist/kit/setup.js';
 import { tmpDir } from './_tmp.js';
 
 describe('installer', () => {
@@ -34,6 +35,16 @@ describe('installer', () => {
     expect(cfg.mcp.primer.command[0]).toBe(process.execPath);
   });
 
+  it('writes Codex MCP config project-locally for local installs', () => {
+    runInstall({ targets: ['codex'], cwd: t.dir, location: 'local' });
+    const local = readFileSync(join(t.dir, '.codex', 'config.toml'), 'utf8');
+    expect(local).toContain('[mcp_servers.primer]');
+    expect(local).toContain('serve');
+
+    runUninstall({ targets: ['codex'], cwd: t.dir, location: 'local' });
+    expect(readFileSync(join(t.dir, '.codex', 'config.toml'), 'utf8')).not.toContain('[mcp_servers.primer]');
+  });
+
   it('refuses to clobber invalid JSON', () => {
     const { writeFileSync } = require('node:fs');
     writeFileSync(join(t.dir, '.mcp.json'), '{ broken');
@@ -55,5 +66,35 @@ describe('entryForScript (transient-path guard)', () => {
     const e = entryForScript('/opt/app/primer/dist/bin/primer.js', '/usr/bin/node');
     expect(e.command).toBe('/usr/bin/node');
     expect(e.args).toEqual(['/opt/app/primer/dist/bin/primer.js', 'serve', '--mcp']);
+  });
+});
+
+describe('native npm setup', () => {
+  let t: ReturnType<typeof tmpDir>;
+  beforeEach(() => {
+    t = tmpDir();
+  });
+  afterEach(() => t.cleanup());
+
+  it('wires core policies plus primer without bash hooks', async () => {
+    await runSetup(['--project', t.dir, '--agents', 'codex']);
+
+    const instructions = readFileSync(join(t.dir, 'AGENTS.md'), 'utf8');
+    expect(instructions).toContain('codegraph-session-startup:start');
+    expect(instructions).toContain('karpathy-guidelines:start');
+    expect(instructions).toContain('superpowers:start');
+    expect(instructions).toContain('primer:start');
+
+    const hooks = readFileSync(join(t.dir, '.codex', 'hooks.json'), 'utf8');
+    expect(hooks).toContain('codegraph-check --format text');
+    expect(hooks).toContain('brief --format text --nudge');
+    expect(hooks).not.toContain('bash ');
+
+    const mcp = readFileSync(join(t.dir, '.codex', 'config.toml'), 'utf8');
+    expect(mcp).toContain('[mcp_servers.primer]');
+    expect(mcp).toContain('serve');
+
+    await runTeardown(['--project', t.dir, '--agents', 'codex', '--purge']);
+    expect(existsSync(join(t.dir, '.primer'))).toBe(false);
   });
 });

@@ -1,11 +1,11 @@
 // The style-graph schema, inlined so the build is a plain `tsc` (no asset copy).
-// Mirrors CodeGraph's patterns: WAL, FTS5 external-content index + triggers,
-// schema versioning. The controlled `category` enum is enforced in the store
-// layer (SQLite has no enum), not here.
+// FTS5 is an optional acceleration layer: the base schema works even when a
+// Node build ships SQLite without FTS5 compiled in. The controlled `category`
+// enum is enforced in the store layer (SQLite has no enum), not here.
 
 export const SCHEMA_VERSION = 1;
 
-export const SCHEMA_SQL = `
+export const BASE_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS primer_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -57,7 +57,9 @@ CREATE TABLE IF NOT EXISTS signals (
   created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_signals_processed ON signals(processed);
+`;
 
+export const FTS_SCHEMA_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS preferences_fts USING fts5(
   statement, detail, category,
   content='preferences', content_rowid='id'
@@ -77,3 +79,5 @@ CREATE TRIGGER IF NOT EXISTS preferences_au AFTER UPDATE ON preferences BEGIN
   VALUES (new.id, new.statement, new.detail, new.category);
 END;
 `;
+
+export const SCHEMA_SQL = BASE_SCHEMA_SQL + FTS_SCHEMA_SQL;

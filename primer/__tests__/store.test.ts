@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DatabaseSync } from 'node:sqlite';
-import { connect } from '../src/db/index.js';
+import { connect, hasFts } from '../src/db/index.js';
 import { buildBrief, forgetPreference, getPreference, queryPreferences, recordPreference } from '../src/graph/store.js';
 import { tmpDir } from './_tmp.js';
 
@@ -50,6 +50,23 @@ describe('style-graph store', () => {
     expect(near.similar.length).toBeGreaterThan(0);
     const forced = recordPreference(db, { category: 'testing', statement: 'Use vitest for the tests', force: true });
     expect(forced.status).toBe('recorded');
+  });
+
+  it('falls back to table scans when FTS5 is unavailable', () => {
+    db.exec(`
+      DROP TRIGGER IF EXISTS preferences_ai;
+      DROP TRIGGER IF EXISTS preferences_ad;
+      DROP TRIGGER IF EXISTS preferences_au;
+      DROP TABLE IF EXISTS preferences_fts;
+    `);
+    expect(hasFts(db)).toBe(false);
+
+    recordPreference(db, { category: 'testing', statement: 'Use vitest for tests' });
+    expect(queryPreferences(db, { text: 'vitest' })).toHaveLength(1);
+
+    const near = recordPreference(db, { category: 'testing', statement: 'Use vitest for the tests' });
+    expect(near.status).toBe('needs_review');
+    expect(near.similar.length).toBeGreaterThan(0);
   });
 
   it('supersedes: old becomes forgotten + an edge is recorded', () => {

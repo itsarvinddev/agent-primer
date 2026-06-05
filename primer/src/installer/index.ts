@@ -97,12 +97,13 @@ function jsonTarget(id: string, mapKey: string, paths: (loc: Location, cwd: stri
 const PRIMER_TOML_MARKER = '# primer-mcp';
 
 function codexTarget(): Target {
-  const file = join(homedir(), '.codex', 'config.toml');
+  const pathFor = (loc: Location, cwd: string) => (loc === 'global' ? join(homedir(), '.codex', 'config.toml') : join(cwd, '.codex', 'config.toml'));
   return {
     id: 'codex',
     detect: () => existsSync(join(homedir(), '.codex')),
-    configPath: () => file,
-    install(_loc, _cwd, entry) {
+    configPath: pathFor,
+    install(loc, cwd, entry) {
+      const file = pathFor(loc, cwd);
       let body = existsSync(file) ? readFileSync(file, 'utf8') : '';
       if (body.includes(PRIMER_TOML_MARKER)) return file; // idempotent
       const block = `\n${PRIMER_TOML_MARKER}\n[mcp_servers.primer]\ncommand = ${JSON.stringify(entry.command)}\nargs = [${entry.args.map((a) => JSON.stringify(a)).join(', ')}]\n`;
@@ -110,7 +111,8 @@ function codexTarget(): Target {
       writeFileSync(file, body + block);
       return file;
     },
-    uninstall() {
+    uninstall(loc, cwd) {
+      const file = pathFor(loc, cwd);
       if (!existsSync(file)) return null;
       const body = readFileSync(file, 'utf8');
       const re = new RegExp(`\\n?${PRIMER_TOML_MARKER}\\n\\[mcp_servers\\.primer\\][\\s\\S]*?(?=\\n\\[|$)`, 'g');

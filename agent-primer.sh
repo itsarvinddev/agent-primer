@@ -159,10 +159,11 @@ structural questions (definitions, callers/callees, impact, traces) that grep ca
 sub-millisecond reads. Once a project is indexed, CodeGraph's file-watcher keeps the index fresh
 automatically — so this is **one-time setup per project, not an every-session ceremony**.
 
-In repos that wire the bundled `SessionStart` hook, `codegraph-session-check.sh` runs this check for
-you at session start. By default it runs in **once-per-project** mode: it injects a `[CodeGraph]`
-setup block **only while the project still needs setup** (no `codegraph` CLI, or no `.codegraph/`
-index yet); once the project is indexed it goes **silent**. So:
+In repos that wire the bundled `SessionStart` hook, Agent-Primer runs this check for you at session
+start (`codegraph-session-check.sh` from the curl/bash kit, or `primer codegraph-check` from the npm
+package). By default it runs in **once-per-project** mode: it injects a `[CodeGraph]` setup block
+**only while the project still needs setup** (no `codegraph` CLI, or no `.codegraph/` index yet);
+once the project is indexed it goes **silent**. So:
 
 - **A `[CodeGraph]` setup block IS present →** the project isn't set up yet; follow it (and the
   decision tree below) before starting the task.
@@ -653,7 +654,7 @@ Usage:
   install.sh ... --dry-run       show what would happen, write nothing
   install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
   install.sh ... --with a,b      also install opt-in bundles: mcp, tools, rules, skills, agent-extensions (or 'all')
-  install.sh ... --with primer   wire the local coding-style engine (Node>=24; not in 'all')
+  install.sh ... --with primer   wire the local coding-style engine (Node>=22.13; not in 'all')
   install.sh --version           print version and exit
   install.sh -h | --help         show this help
 
@@ -923,10 +924,10 @@ PY
   else FAILED=1; note "could not add PostToolUse hook to $file (left untouched)"; fi
 }
 
-# Node >= 24 (primer needs node:sqlite WITH the bundled FTS5 module, which ships from Node 24).
+# Node >= 22.13 (primer uses node:sqlite; FTS5 is optional and falls back when unavailable).
 primer_node_ok() {
   command -v node >/dev/null 2>&1 || return 1
-  node -e 'process.exit(Number(process.versions.node.split(".")[0])>=24?0:1)' >/dev/null 2>&1
+  node -e 'const [M,m]=process.versions.node.split(".").map(Number); process.exit(M>22 || (M===22 && m>=13) ? 0 : 1)' >/dev/null 2>&1
 }
 
 # Idempotently gitignore the local style DB.
@@ -1243,7 +1244,7 @@ if policy_on primer; then
 
   if [ -z "$PRIMER_KIND" ]; then
     if [ "$DRYRUN" = 1 ]; then note "would resolve primer (installed CLI / repo build / npm i -g $PRIMER_PKG) and wire it."
-    else note "primer: could not resolve a runnable primer. Install once: npm i -g $PRIMER_PKG (needs Node>=24), then re-run with --with primer. Ad-hoc: npx $PRIMER_PKG"; fi
+    else note "primer: could not resolve a runnable primer. Install once: npm i -g $PRIMER_PKG (needs Node>=22.13), then re-run with --with primer. Ad-hoc: npx $PRIMER_PKG"; fi
   elif [ "$DRYRUN" = 1 ]; then
     note "would init the style DB, register the MCP server, distribute primer-policy.md, and wire the [Primer] brief + capture hooks via: $PRIMER_INVOKE"
   else
