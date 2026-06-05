@@ -5,8 +5,8 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 import { CATEGORIES, type Preference, PrimerError, type Scope, isCategory, isSource, nowIso } from '../types.js';
-import type { Row } from '../db/index.js';
-import { decayedWeight, ftsMatchExpr, isNegated, jaccard, normalizeStatement } from './text.js';
+import { hasFts, type Row } from '../db/index.js';
+import { decayedWeight, ftsMatchExpr, isNegated, jaccard, normalizeStatement, tokenize } from './text.js';
 
 const MAX_STATEMENT = 200;
 const NEAR_DUP_THRESHOLD = 0.5;
@@ -74,6 +74,54 @@ function findConflicts(db: DatabaseSync, category: string, statement: string): P
     .filter((p) => p.statement !== statement && jaccard(p.statement, statement) >= NEAR_DUP_THRESHOLD && isNegated(p.statement) !== negNew);
 }
 
+function activePrefsForSearch(db: DatabaseSync, category?: string, limit = 1000): Preference[] {
+  const rows = db
+    .prepare(
+      `SELECT * FROM preferences WHERE status = 'active' ${category ? 'AND category = ?' : ''} ORDER BY updated_at DESC LIMIT ?`,
+    )
+    .all(...(category ? [category, limit] : [limit])) as Row[];
+  return rows.map(rowToPref);
+}
+
+function ftsCandidates(db: DatabaseSync, expr: string, category: string): Preference[] {
+  if (!hasFts(db)) return [];
+  try {
+    const rows = db
+      .prepare(
+        "SELECT p.* FROM preferences_fts f JOIN preferences p ON p.id = f.rowid WHERE preferences_fts MATCH ? AND p.category = ? AND p.status = 'active' LIMIT 25",
+      )
+      .all(expr, category) as Row[];
+    return rows.map(rowToPref);
+  } catch {
+    return [];
+  }
+}
+
+function nearDuplicateCandidates(db: DatabaseSync, category: string, statement: string): Preference[] {
+  const expr = ftsMatchExpr(statement);
+  if (expr) {
+    const candidates = ftsCandidates(db, expr, category);
+    if (candidates.length > 0) return candidates;
+  }
+  return activePrefsForSearch(db, category);
+}
+
+function fallbackSearch(db: DatabaseSync, text: string, category: string | undefined, limit: number): Preference[] {
+  const tokens = new Set(tokenize(text));
+  if (tokens.size === 0) return activePrefsForSearch(db, category, limit);
+  return activePrefsForSearch(db, category)
+    .map((p) => {
+      const hay = tokenize(`${p.statement} ${p.detail ?? ''} ${p.category}`);
+      const overlap = hay.filter((t) => tokens.has(t)).length;
+      const score = overlap + jaccard(text, `${p.statement} ${p.detail ?? ''}`);
+      return { p, score };
+    })
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score || b.p.updated_at.localeCompare(a.p.updated_at))
+    .slice(0, limit)
+    .map((r) => r.p);
+}
+
 export interface RecordInput {
   category: string;
   statement: string;
@@ -129,16 +177,7 @@ export function recordPreference(db: DatabaseSync, input: RecordInput): RecordRe
 
   // Near-dup gate (skippable with force / explicit supersede).
   if (!input.force && input.supersedes == null) {
-    const expr = ftsMatchExpr(statement);
-    let candidates: Preference[] = [];
-    if (expr) {
-      const rows = db
-        .prepare(
-          "SELECT p.* FROM preferences_fts f JOIN preferences p ON p.id = f.rowid WHERE preferences_fts MATCH ? AND p.category = ? AND p.status = 'active' LIMIT 25",
-        )
-        .all(`${expr}`, category) as Row[];
-      candidates = rows.map(rowToPref);
-    }
+    const candidates = nearDuplicateCandidates(db, category, statement);
     const similar = candidates.filter((p) => jaccard(p.statement, statement) >= NEAR_DUP_THRESHOLD);
     if (similar.length > 0) {
       return {
@@ -185,16 +224,21 @@ export function recordPreference(db: DatabaseSync, input: RecordInput): RecordRe
 export function queryPreferences(db: DatabaseSync, opts: { text?: string; category?: string; limit?: number }): Preference[] {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
   const expr = opts.text ? ftsMatchExpr(opts.text) : null;
-  if (expr) {
-    const rows = db
-      .prepare(
-        `SELECT p.* FROM preferences_fts f JOIN preferences p ON p.id = f.rowid
-         WHERE preferences_fts MATCH ? AND p.status = 'active' ${opts.category ? 'AND p.category = ?' : ''}
-         ORDER BY rank LIMIT ?`,
-      )
-      .all(...(opts.category ? [expr, opts.category, limit] : [expr, limit])) as Row[];
-    return rows.map(rowToPref);
+  if (expr && hasFts(db)) {
+    try {
+      const rows = db
+        .prepare(
+          `SELECT p.* FROM preferences_fts f JOIN preferences p ON p.id = f.rowid
+           WHERE preferences_fts MATCH ? AND p.status = 'active' ${opts.category ? 'AND p.category = ?' : ''}
+           ORDER BY rank LIMIT ?`,
+        )
+        .all(...(opts.category ? [expr, opts.category, limit] : [expr, limit])) as Row[];
+      return rows.map(rowToPref);
+    } catch {
+      // Fall through to the table-scan search. Preference sets are intentionally small.
+    }
   }
+  if (opts.text) return fallbackSearch(db, opts.text, opts.category, limit);
   const rows = db
     .prepare(
       `SELECT * FROM preferences WHERE status = 'active' ${opts.category ? 'AND category = ?' : ''} ORDER BY updated_at DESC LIMIT ?`,

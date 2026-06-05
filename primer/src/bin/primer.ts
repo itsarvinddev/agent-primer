@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// primer launcher. node:sqlite needs `--experimental-sqlite` on Node 22.5–23.x and
-// emits an ExperimentalWarning before Node 24. To keep behavior correct AND keep the
-// MCP stdio stream clean, we re-exec ONCE with the right flag + NODE_NO_WARNINGS when
-// needed. On Node 24+ (where node:sqlite is stable) this is a no-op — no extra process.
+// primer launcher. Older Node 22 builds needed `--experimental-sqlite`, and
+// pre-24 builds can emit an ExperimentalWarning. To keep behavior correct AND
+// keep the MCP stdio stream clean, re-exec ONCE with the right flag +
+// NODE_NO_WARNINGS when needed. On newer builds this is a no-op.
 
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';

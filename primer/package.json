@@ -5,7 +5,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=22.13.0"
   },
   "bin": {
     "primer": "dist/bin/primer.js"
@@ -40,11 +40,10 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepare": "npm run build",
     "pretest": "npm run build",
     "test": "vitest run",
     "prepublishOnly": "npm run typecheck && npm test",
-    "prepack": "node scripts/bundle-kit.mjs"
+    "prepack": "npm run build && node scripts/bundle-kit.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

@@ -8,10 +8,11 @@ structural questions (definitions, callers/callees, impact, traces) that grep ca
 sub-millisecond reads. Once a project is indexed, CodeGraph's file-watcher keeps the index fresh
 automatically — so this is **one-time setup per project, not an every-session ceremony**.
 
-In repos that wire the bundled `SessionStart` hook, `codegraph-session-check.sh` runs this check for
-you at session start. By default it runs in **once-per-project** mode: it injects a `[CodeGraph]`
-setup block **only while the project still needs setup** (no `codegraph` CLI, or no `.codegraph/`
-index yet); once the project is indexed it goes **silent**. So:
+In repos that wire the bundled `SessionStart` hook, Agent-Primer runs this check for you at session
+start (`codegraph-session-check.sh` from the curl/bash kit, or `primer codegraph-check` from the npm
+package). By default it runs in **once-per-project** mode: it injects a `[CodeGraph]` setup block
+**only while the project still needs setup** (no `codegraph` CLI, or no `.codegraph/` index yet);
+once the project is indexed it goes **silent**. So:
 
 - **A `[CodeGraph]` setup block IS present →** the project isn't set up yet; follow it (and the
   decision tree below) before starting the task.

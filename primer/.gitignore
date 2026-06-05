@@ -12,4 +12,4 @@ dist/
 *.tgz
 
 # bundled bash kit (copied from repo root at pack time)
-kit/
+/kit/

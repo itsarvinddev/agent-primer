@@ -63,7 +63,7 @@ TypeScript/Node, mirroring CodeGraph's proven stack — **zero native build, no 
 
 | Concern | Choice | Notes |
 |---|---|---|
-| Store | `node:sqlite` (WAL + FTS5) | built into Node ≥ 24 (the bundled SQLite ships FTS5 from v24); no `better-sqlite3` |
+| Store | `node:sqlite` (WAL + optional FTS5) | built into Node ≥ 22.13; no native npm module. If FTS5 is unavailable, Primer falls back to table-scan search/dedup over the small local preference set. |
 | MCP | `@modelcontextprotocol/sdk` over **stdio** | raw `Server` + JSON-Schema tools (no zod) |
 | CLI | `commander` | `init/status/record/show/brief/query/list/forget/signal/learn/install/serve` |
 | Launcher | `src/bin/primer.ts` | re-execs with `--experimental-sqlite` + `NODE_NO_WARNINGS` only if an older Node needs it (a no-op on Node 24+); **stdout is JSON-RPC only** in `serve --mcp` |
@@ -82,12 +82,12 @@ Reads merge project over global.
 - `pref_edges` — `conflicts`/`supersedes`/`co_occurs` between preferences (the graph; powers
   conflict resolution so the brief never emits two contradictory rules).
 - `signals` — raw edits; excerpts are secret-scrubbed and capped (≤2 KB / 40 lines).
-- `preferences_fts` — FTS5 external-content index + triggers, for search + the near-dup gate.
+- `preferences_fts` — optional FTS5 external-content index + triggers, for faster search + the near-dup gate when available.
 
 ### The contract (quality controls — schema dedup isn't enough)
 `primer_record` enforces: enum category; one-line imperative (no newlines, ≤200 chars);
-durable-only (rejects task-specific wording); a **near-dup gate** (FTS5 + Jaccard ≥ 0.5 →
-returns "reinforce/supersede/force" instead of inserting a sibling); explicit **supersede**
+durable-only (rejects task-specific wording); a **near-dup gate** (FTS5 when available, otherwise a
+bounded table scan, plus Jaccard ≥ 0.5 → returns "reinforce/supersede/force" instead of inserting a sibling); explicit **supersede**
 (forget old + edge); and a light **polarity conflict** heuristic that records a `conflicts` edge.
 
 ### Privacy gate (`src/learn/privacy.ts`)
@@ -141,7 +141,7 @@ impact; code-structure impact — callers/callees — would reuse CodeGraph and 
 The package (`@agent-primer/primer`, scoped) ships only `dist` + docs; `tree-sitter-wasms`,
 `@modelcontextprotocol/sdk`, `commander`, and `web-tree-sitter` are runtime deps resolved on install,
 so the WASM grammars come from the installed dependency (no vendoring). `node:sqlite` is built into
-Node ≥ 24 (with FTS5). To use without the repo: `npm i @agent-primer/primer` or
+Node ≥ 22.13; FTS5 is used opportunistically. To use without the repo: `npm i @agent-primer/primer` or
 `npm i ./agent-primer-primer-*.tgz` from a local `npm pack`.
 
 ## The bar to `1.0` (when all hold)
