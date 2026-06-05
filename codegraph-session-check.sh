@@ -100,23 +100,29 @@ emit() {
 
 if ! command -v codegraph >/dev/null 2>&1; then
   emit "[CodeGraph] The \`codegraph\` CLI is NOT installed in this environment.
-Per the CodeGraph session-startup rule you MUST set it up before substantive work:
-  1. Install CLI:  ${INSTALL_SH}
-       (or:  npm i -g @colbymchenry/codegraph)
-  2. Register the MCP server into this agent:  codegraph install
-  3. Build the index:  codegraph init -i
-  4. Then ask the user to RESTART this agent/IDE so the codegraph_* MCP tools load.
-Until the restart you can already use the \`codegraph\` CLI via Bash (status, query,
-context, callers, callees, impact, files). Announce each command before running it."
+Do NOT leave this as a passive note. Ask the user this direct yes/no question before substantive work:
+
+  CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
+    ${INSTALL_SH}
+    codegraph install
+    codegraph init -i
+
+If the user says yes, announce each command, run the three commands, then ask them to RESTART this
+agent/IDE so the codegraph_* MCP tools load. Until restart, use the \`codegraph\` CLI directly.
+If the user says no, proceed without CodeGraph and mention that structural code answers may be weaker."
   exit 0
 fi
 
 if [ ! -d "$PROJECT_DIR/.codegraph" ]; then
   emit "[CodeGraph] CLI present, but this project is NOT initialized (no .codegraph/ at
-${PROJECT_DIR}). Build the index before relying on CodeGraph:
-  codegraph init -i
-If the codegraph_* MCP tools are missing afterwards, run \`codegraph install\` then ask
-the user to restart this agent/IDE."
+${PROJECT_DIR}).
+Do NOT leave this as a passive note. Ask the user this direct yes/no question before substantive work:
+
+  CodeGraph is installed, but this repo is not indexed yet. Want me to run \`codegraph init -i\` now?
+
+If the user says yes, announce and run \`codegraph init -i\`. If the codegraph_* MCP tools are
+missing afterwards, run \`codegraph install\` and ask the user to restart this agent/IDE.
+If the user says no, proceed without CodeGraph and mention that structural code answers may be weaker."
   exit 0
 fi
 

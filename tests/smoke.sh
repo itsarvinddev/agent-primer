@@ -33,6 +33,7 @@ if command -v codegraph >/dev/null 2>&1; then
   chk "--always: prints index-present block"      'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM" --always 2>/dev/null | grep -q "Index present"'
   OM2="$(mk)"
   chk "not set up: still nudges codegraph init"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -q "codegraph init -i"'
+  chk "not set up: asks direct yes/no question"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "Want me to run" | grep -F "codegraph init -i" >/dev/null'
 else
   echo "  skip branch-2/3 hook tests (no codegraph CLI on PATH)"
 fi
