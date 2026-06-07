@@ -40,7 +40,9 @@ exists.
 1. **Is the `codegraph` CLI installed?** — `command -v codegraph` (or `codegraph --version`).
    - **No →** ask the user this exact simple question, then install if they say yes:
      "CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
-     `<install command>`, `codegraph install`, and `codegraph init -i`."
+     `<install command>`, `codegraph install -y`, and `codegraph init -i`."
+     Use `codegraph install -y` (non-interactive). A bare `codegraph install` opens an interactive
+     agent-picker prompt that has no TTY in an agent context and will hang session startup.
 2. **Is THIS project indexed?** — does `.codegraph/` exist at the repo root, and does
    `codegraph status` succeed?
    - **No →** ask: "CodeGraph is installed, but this repo is not indexed yet. Want me to run
@@ -68,7 +70,7 @@ announce each command before running it (it touches the user's machine), in orde
 | 1. Install CLI (macOS/Linux) | `curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh \| sh` | Self-contained binary; no Node required |
 | 1. Install CLI (any OS, alt) | `npm i -g @colbymchenry/codegraph` | npm alternative |
 | 1. Install CLI (Windows) | `irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 \| iex` | PowerShell |
-| 2. Register MCP into agents | `codegraph install` | Adds the `codegraph` MCP server to Claude Code / Cursor / Codex / opencode / Gemini / etc. config |
+| 2. Register MCP into agents | `codegraph install -y` | Adds the `codegraph` MCP server to Claude Code / Cursor / Codex / opencode / Gemini / etc. config. Use `-y` — a bare `codegraph install` prompts interactively and hangs in a non-TTY agent context |
 | 3. Build the index | `codegraph init -i` | Creates `.codegraph/` and indexes the repo |
 | 4. Keep it fresh later | `codegraph sync` | Incremental update since last index |
 
@@ -76,10 +78,10 @@ announce each command before running it (it touches the user's machine), in orde
 
 ## The restart reality — be honest about it
 
-Registering the MCP server (`codegraph install`) makes the `codegraph_*` **MCP tools** available
+Registering the MCP server (`codegraph install -y`) makes the `codegraph_*` **MCP tools** available
 **only after the agent/IDE restarts** — and **you cannot restart yourself or your host app**. So:
 
-- Do **everything that does not need a restart** right now: install the CLI, `codegraph install`,
+- Do **everything that does not need a restart** right now: install the CLI, `codegraph install -y`,
   `codegraph init -i`, `codegraph sync`.
 - **Use the `codegraph` CLI via your shell/Bash immediately** for the current task — it works
   without the MCP tools (`codegraph query`, `codegraph context <task>`, `codegraph callers`,
@@ -87,6 +89,17 @@ Registering the MCP server (`codegraph install`) makes the `codegraph_*` **MCP t
 - Then **explicitly ask the user to restart** the agent/IDE (Claude Code: restart or `/mcp`
   reconnect; Cursor: Reload Window; Codex/Gemini/opencode/Kimi: restart the CLI; Antigravity/Qoder:
   restart the IDE) so the `codegraph_*` MCP tools load, and resume the task afterward.
+- **After the restart, VERIFY the `codegraph_*` tools actually loaded** — don't assume the restart
+  worked. If they're still missing, the usual cause is a **PATH mismatch**: the CLI installer links
+  the binary into `~/.local/bin`, which is often **not** on the PATH a GUI-launched agent inherits
+  (VS Code, desktop apps), so the MCP server — registered as the bare command `codegraph` — fails to
+  spawn **silently**. To fix, find the real binary with `command -v codegraph` (try
+  `~/.local/bin/codegraph --version` if PATH can't see it), then EITHER add `~/.local/bin` to PATH
+  (e.g. append `export PATH="$HOME/.local/bin:$PATH"` to the shell profile) **or** re-register the
+  server with the absolute path — rewrite the `codegraph` MCP entry's `command` from `"codegraph"` to
+  the absolute binary path (e.g. `"$HOME/.local/bin/codegraph"`) in the agent's MCP config, then
+  restart once more. The absolute-path form is the more robust fix because it does not depend on the
+  agent's PATH.
 - **Never claim you restarted yourself.** Never fabricate that the MCP tools are available when
   they are not — verify, or use the CLI.
 

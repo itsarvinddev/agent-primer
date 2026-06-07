@@ -114,6 +114,7 @@ chk "codex hooks.json valid JSON"         'vjson "$P/.codex/hooks.json"'
 chk "gemini settings.json valid JSON"     'vjson "$P/.gemini/settings.json"'
 chk "opencode plugin written"             '[ -f "$P/.opencode/plugins/codegraph-session-check.js" ]'
 chk "kit placed under tools/agent-primer" '[ -f "$P/tools/agent-primer/codegraph-session-check.sh" ]'
+chk "project install gitignores .codegraph/" 'grep -qE "^/?\.codegraph/?\$" "$P/.gitignore"'
 
 echo "== idempotency (2nd install = no diff) =="
 S="$(mk)"; cp -a "$P/." "$S/"; guard bash "$INSTALL" --project "$P" >/dev/null 2>&1

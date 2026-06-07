@@ -107,11 +107,15 @@ direct yes/no question in chat:
 
   CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
     ${INSTALL_SH}
-    codegraph install
+    codegraph install -y
     codegraph init -i
 
 If the user says yes, announce each command, run the three commands, then ask them to RESTART this
-agent/IDE so the codegraph_* MCP tools load. Until restart, use the \`codegraph\` CLI directly.
+agent/IDE so the codegraph_* MCP tools load. (Use \`codegraph install -y\`: a bare \`codegraph
+install\` prompts interactively and hangs without a TTY.) After the restart, VERIFY the codegraph_*
+tools loaded; if they are missing, the binary is usually in ~/.local/bin off the agent's PATH — add
+it to PATH or re-register the MCP server's command with the absolute path. Until restart, use the
+\`codegraph\` CLI directly.
 If the user says no, proceed without CodeGraph and mention that structural code answers may be weaker."
   exit 0
 fi
@@ -127,7 +131,7 @@ direct yes/no question in chat:
   CodeGraph is installed, but this repo is not indexed yet. Want me to run \`codegraph init -i\` now?
 
 If the user says yes, announce and run \`codegraph init -i\`. If the codegraph_* MCP tools are
-missing afterwards, run \`codegraph install\` and ask the user to restart this agent/IDE.
+missing afterwards, run \`codegraph install -y\` and ask the user to restart this agent/IDE.
 If the user says no, proceed without CodeGraph and mention that structural code answers may be weaker."
   exit 0
 fi
