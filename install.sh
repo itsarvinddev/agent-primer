@@ -344,6 +344,18 @@ primer_gitignore() { # primer_gitignore GITIGNORE_FILE
   else note "could not update $gi (add .primer/ manually)"; fi
 }
 
+# Idempotently gitignore CodeGraph's machine-local index. The codegraph-policy has the agent
+# run `codegraph init -i`, which writes a per-machine `.codegraph/` index that must never be
+# committed — on a team-shared project install nothing else stops someone checking it in.
+codegraph_gitignore() { # codegraph_gitignore GITIGNORE_FILE
+  local gi="$1"
+  if [ "$DRYRUN" = 1 ]; then note "would add .codegraph/ to $gi"; return 0; fi
+  if [ -f "$gi" ] && grep -qE '^/?\.codegraph/?$' "$gi" 2>/dev/null; then return 0; fi
+  if printf '\n# codegraph: local code-structure index (rebuilt per machine; do not commit)\n.codegraph/\n' >> "$gi" 2>/dev/null; then
+    note "added .codegraph/ to $gi"
+  else note "could not update $gi (add .codegraph/ manually)"; fi
+}
+
 selected() { case ",$AGENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 
 # Once-mode is the default. With --always, every wired hook command gets the flag so the
@@ -410,6 +422,9 @@ if [ "$DRYRUN" = 0 ]; then
 else
   note "would place kit in $KIT_DEST"
 fi
+
+# On a project install the CodeGraph index lands at the repo root — keep it out of version control.
+[ "$SCOPE" = "project" ] && codegraph_gitignore "$ROOT/.gitignore"
 
 # --- per-agent wiring ----------------------------------------------------------
 
