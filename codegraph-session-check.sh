@@ -96,6 +96,20 @@ emit() {
   esac
 }
 
+# An initialized index = the .codegraph/ dir AND at least one SQLite db file inside it.
+# We check for the db file rather than running `codegraph status` on purpose: a bare
+# .codegraph/ directory left behind by an aborted/half-finished `init` would otherwise
+# look "set up" and make once-mode go silent on a broken index. Running `codegraph status`
+# every session is exactly the cost once-mode removes, so this cheap filesystem check is the
+# right middle ground; deep corruption is still `codegraph status`/--always's job.
+index_initialized() {
+  [ -d "$PROJECT_DIR/.codegraph" ] || return 1
+  for _db in "$PROJECT_DIR"/.codegraph/*.db; do
+    [ -f "$_db" ] && return 0
+  done
+  return 1
+}
+
 # --- checks ----------------------------------------------------------------
 
 if ! command -v codegraph >/dev/null 2>&1; then
@@ -120,9 +134,9 @@ If the user says no, proceed without CodeGraph and mention that structural code 
   exit 0
 fi
 
-if [ ! -d "$PROJECT_DIR/.codegraph" ]; then
-  emit "[CodeGraph] CLI present, but this project is NOT initialized (no .codegraph/ at
-${PROJECT_DIR}).
+if ! index_initialized; then
+  emit "[CodeGraph] CLI present, but this project is NOT initialized (no index DB under
+${PROJECT_DIR}/.codegraph/).
 Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
 prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
 command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
