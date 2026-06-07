@@ -106,6 +106,20 @@ emit() {
   esac
 }
 
+# An initialized index = the .codegraph/ dir AND at least one SQLite db file inside it.
+# We check for the db file rather than running `codegraph status` on purpose: a bare
+# .codegraph/ directory left behind by an aborted/half-finished `init` would otherwise
+# look "set up" and make once-mode go silent on a broken index. Running `codegraph status`
+# every session is exactly the cost once-mode removes, so this cheap filesystem check is the
+# right middle ground; deep corruption is still `codegraph status`/--always's job.
+index_initialized() {
+  [ -d "$PROJECT_DIR/.codegraph" ] || return 1
+  for _db in "$PROJECT_DIR"/.codegraph/*.db; do
+    [ -f "$_db" ] && return 0
+  done
+  return 1
+}
+
 # --- checks ----------------------------------------------------------------
 
 if ! command -v codegraph >/dev/null 2>&1; then
@@ -130,9 +144,9 @@ If the user says no, proceed without CodeGraph and mention that structural code 
   exit 0
 fi
 
-if [ ! -d "$PROJECT_DIR/.codegraph" ]; then
-  emit "[CodeGraph] CLI present, but this project is NOT initialized (no .codegraph/ at
-${PROJECT_DIR}).
+if ! index_initialized; then
+  emit "[CodeGraph] CLI present, but this project is NOT initialized (no index DB under
+${PROJECT_DIR}/.codegraph/).
 Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
 prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
 command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
@@ -1644,6 +1658,55 @@ PY
   else FAILED=1; note "ERROR: failed to remove $tag hooks from $file"; fi
 }
 
+# Reverse install's Gemini `context.fileName` additions (AGENTS.md / GEMINI.md), but ONLY for
+# entries whose instruction file is now gone — a dangling reference. If the file still exists the
+# user may rely on it, so we leave it. Args after FILE are NAME=PATH pairs; NAME is pruned only when
+# PATH does not exist. Tidies an emptied fileName/context. Atomic; refuses malformed JSON.
+prune_gemini_filename() { # prune_gemini_filename SETTINGS_JSON NAME=PATH [NAME=PATH ...]
+  local file="$1"; shift; [ -f "$file" ] || return 0
+  local prune="" pair name path
+  for pair in "$@"; do
+    name="${pair%%=*}"; path="${pair#*=}"
+    [ -e "$path" ] || prune="$prune $name"
+  done
+  prune="$(printf '%s' "$prune" | sed 's/^ *//')"
+  [ -z "$prune" ] && return 0
+  if [ "$DRYRUN" = 1 ]; then note "would prune dangling fileName entries ($prune) from $file"; return 0; fi
+  if [ "$HAVE_PY" = 0 ]; then note "python3 not found — remove dangling [$prune] from context.fileName in $file by hand"; return 0; fi
+  if CG_FILE="$file" CG_PRUNE="$prune" "$PY" - <<'PY'
+import os, json, sys, tempfile
+f=os.environ["CG_FILE"]; prune=set(os.environ["CG_PRUNE"].split())
+raw=open(f,encoding="utf-8").read()
+if not raw.strip(): sys.exit(0)
+try: data=json.loads(raw)
+except Exception as ex:
+    sys.stderr.write(f"[agent-primer] {f}: invalid JSON ({ex}); refusing to modify it\n"); sys.exit(2)
+if not isinstance(data, dict): sys.exit(0)
+ctx=data.get("context")
+if not isinstance(ctx, dict): sys.exit(0)
+names=ctx.get("fileName")
+if isinstance(names, str): names=[names]
+if not isinstance(names, list): sys.exit(0)
+new=[n for n in names if n not in prune]
+if new==names: sys.exit(0)
+if new: ctx["fileName"]=new
+else:
+    ctx.pop("fileName", None)
+    if not ctx: data.pop("context", None)
+text=json.dumps(data, indent=2)+"\n"
+d=os.path.dirname(f) or "."; fd,tmp=tempfile.mkstemp(dir=d, prefix=".ap-", suffix=".tmp")
+try:
+    with os.fdopen(fd,"w",encoding="utf-8") as o: o.write(text)
+    os.replace(tmp,f)
+except Exception as ex:
+    try: os.unlink(tmp)
+    except OSError: pass
+    sys.stderr.write(f"[agent-primer] {f}: write failed ({ex})\n"); sys.exit(3)
+PY
+  then note "pruned dangling fileName entries ($prune) from $file"
+  else FAILED=1; note "ERROR: failed to prune fileName entries from $file"; fi
+}
+
 note "uninstall scope=$SCOPE target=$ROOT  agents=$AGENTS  dry-run=$DRYRUN  purge=$PURGE"
 
 if selected claude; then
@@ -1656,7 +1719,15 @@ if selected cursor; then
   [ -n "$CURSOR_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$CURSOR_RULE_DIR/$n.mdc"; done
   unhook_json "$HFILE" cursor
 fi
-if selected gemini; then strip_markers "$GEMINI_INSTR"; unhook_json "$GS" gemini; fi   # leaves context.fileName (harmless, user may rely on it)
+if selected gemini; then
+  strip_markers "$GEMINI_INSTR"; unhook_json "$GS" gemini
+  # Reverse install's context.fileName additions — but only entries now pointing at a deleted
+  # file (strip_markers removes GEMINI.md/AGENTS.md when they held only our blocks). A file the
+  # user still has is left referenced. AGENTS.md is project-scope only: globally that entry means
+  # "read each project's AGENTS.md", which agent-primer's global install does not own.
+  if [ "$SCOPE" = "project" ]; then prune_gemini_filename "$GS" "GEMINI.md=$GEMINI_INSTR" "AGENTS.md=$ROOT/AGENTS.md"
+  else prune_gemini_filename "$GS" "GEMINI.md=$GEMINI_INSTR"; fi
+fi
 if selected opencode; then rm_path "$OPENCODE_PLUG"; rm_path "${OPENCODE_PLUG%/*}/primer-session-check.js"; strip_markers "$OPENCODE_INSTR"; fi
 if selected antigravity; then
   [ -n "$ANTI_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$ANTI_RULE_DIR/$n.md"; done

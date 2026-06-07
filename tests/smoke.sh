@@ -27,10 +27,13 @@ chk "trailing --agents does not hang"     'guard bash "$INSTALL" --project "$(mk
 chk "trailing --format hook does not hang" 'guard bash "$ROOT/codegraph-session-check.sh" --format >/dev/null 2>&1; [ $? -ne 142 ]'
 
 echo "== once-mode hook (default) + --always opt-out =="
-OM="$(mk)"; mkdir -p "$OM/.codegraph"
+# A real index = the .codegraph/ dir AND a SQLite db inside it (an aborted init leaves a bare dir).
+OM="$(mk)"; mkdir -p "$OM/.codegraph"; : > "$OM/.codegraph/codegraph.db"
 if command -v codegraph >/dev/null 2>&1; then
   chk "once-mode: silent when project is set up"  '[ -z "$(guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM" 2>/dev/null)" ]'
   chk "--always: prints index-present block"      'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM" --always 2>/dev/null | grep -q "Index present"'
+  OMH="$(mk)"; mkdir -p "$OMH/.codegraph"   # dir present but NO index db = half-built init
+  chk "half-built .codegraph (no db) nudges init" 'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OMH" 2>/dev/null | grep -q "codegraph init -i"'
   OM2="$(mk)"
   chk "not set up: still nudges codegraph init"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -q "codegraph init -i"'
   chk "not set up: asks through prompt dialog"    'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "prompt/confirmation dialog" >/dev/null && guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "Want me to run" >/dev/null'
@@ -136,6 +139,17 @@ chk "AGENTS.md block-free after uninstall" '! has_block "$U/AGENTS.md" codegraph
 chk "claude hook removed"                  '! grep -q codegraph-session-check.sh "$U/.claude/settings.json" 2>/dev/null'
 chk "cursor superpowers.mdc removed"       '[ ! -f "$U/.cursor/rules/superpowers.mdc" ]'
 chk "kit dir removed"                      '[ ! -d "$U/tools/agent-primer" ]'
+chk "gemini fileName: dangling GEMINI.md pruned" '! grep -q "GEMINI.md" "$U/.gemini/settings.json" 2>/dev/null'
+chk "gemini fileName: dangling AGENTS.md pruned" '! grep -q "AGENTS.md" "$U/.gemini/settings.json" 2>/dev/null'
+chk "gemini settings.json still valid JSON"      'vjson "$U/.gemini/settings.json"'
+
+echo "== gemini fileName: a surviving file's ref is kept =="
+GK="$(mk)"; guard bash "$INSTALL" --project "$GK" --agents gemini >/dev/null 2>&1
+printf '\nuser-kept content\n' >> "$GK/GEMINI.md"   # GEMINI.md now has non-ours content → survives strip
+guard bash "$UNINSTALL" --project "$GK" --agents gemini >/dev/null 2>&1
+chk "gemini: surviving GEMINI.md preserved"      '[ -f "$GK/GEMINI.md" ]'
+chk "gemini: surviving GEMINI.md ref kept"       'grep -q "GEMINI.md" "$GK/.gemini/settings.json" 2>/dev/null'
+chk "gemini: dangling AGENTS.md ref still pruned" '! grep -q "AGENTS.md" "$GK/.gemini/settings.json" 2>/dev/null'
 
 echo "== global install + uninstall (isolated HOME) =="
 H="$(mk)"; guard env HOME="$H" bash "$INSTALL" --global >/dev/null 2>&1
