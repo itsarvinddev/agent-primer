@@ -86,7 +86,7 @@ describe('native npm setup', () => {
     expect(instructions).toContain('primer:start');
 
     const hooks = readFileSync(join(t.dir, '.codex', 'hooks.json'), 'utf8');
-    expect(hooks).toContain('codegraph-check --format text');
+    expect(hooks).toContain('codegraph-check --format text --bootstrap');
     expect(hooks).toContain('brief --format text --nudge');
     expect(hooks).not.toContain('bash ');
 
@@ -96,5 +96,44 @@ describe('native npm setup', () => {
 
     await runTeardown(['--project', t.dir, '--agents', 'codex', '--purge']);
     expect(existsSync(join(t.dir, '.primer'))).toBe(false);
+  });
+
+  it('project setup gitignores .codegraph/ and wires a bootstrapping opencode plugin', async () => {
+    await runSetup(['--project', t.dir, '--agents', 'opencode']);
+    expect(readFileSync(join(t.dir, '.gitignore'), 'utf8')).toMatch(/^\.codegraph\/$/m);
+    const plugin = readFileSync(join(t.dir, '.opencode', 'plugins', 'codegraph-session-check.js'), 'utf8');
+    expect(plugin).toContain('--bootstrap');
+  });
+
+  it('--no-bootstrap wires instruct-only hooks', async () => {
+    await runSetup(['--project', t.dir, '--agents', 'codex', '--no-bootstrap']);
+    const hooks = readFileSync(join(t.dir, '.codex', 'hooks.json'), 'utf8');
+    expect(hooks).toContain('codegraph-check --format text');
+    expect(hooks).not.toContain('--bootstrap');
+  });
+
+  it('gemini hook entries carry a millisecond timeout for the bootstrap', async () => {
+    await runSetup(['--project', t.dir, '--agents', 'gemini']);
+    const settings = JSON.parse(readFileSync(join(t.dir, '.gemini', 'settings.json'), 'utf8'));
+    const entry = settings.hooks.SessionStart.find((e: any) => e.hooks?.[0]?.command?.includes('codegraph-check'));
+    expect(entry.hooks[0].timeout).toBe(120000);
+  });
+
+  it('kimi global wiring honors KIMI_CODE_HOME and raises the codegraph hook timeout', async () => {
+    const prevHome = process.env.HOME;
+    const prevKimi = process.env.KIMI_CODE_HOME;
+    process.env.HOME = t.dir;
+    process.env.KIMI_CODE_HOME = join(t.dir, 'kimi-home');
+    try {
+      await runSetup(['--global', '--agents', 'kimi']);
+      const conf = readFileSync(join(t.dir, 'kimi-home', 'config.toml'), 'utf8');
+      expect(conf).toContain('codegraph-check');
+      expect(conf).toContain('timeout = 120');
+      expect(existsSync(join(t.dir, 'kimi-home', 'skills', 'codegraph-startup', 'SKILL.md'))).toBe(true);
+    } finally {
+      process.env.HOME = prevHome;
+      if (prevKimi == null) delete process.env.KIMI_CODE_HOME;
+      else process.env.KIMI_CODE_HOME = prevKimi;
+    }
   });
 });

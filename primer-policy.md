@@ -4,7 +4,8 @@ primer is a local-first personal coding-intelligence engine wired by agent-prime
 `--with primer`. It learns your personal coding style from your edits and serves it over **MCP**,
 so the agent writes code the way **you** do. 100% local — no model, no network, no telemetry.
 *What CodeGraph is for code structure, primer is for your coding taste.* Opt-in via
-`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 24.
+`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 22.13 (best on 24+,
+where SQLite full-text search is built in).
 
 ## Use the `primer_*` MCP tools (available after a restart)
 - **Before** writing or editing code, call **`primer_apply`** (pass language/context) and apply the
@@ -18,9 +19,12 @@ so the agent writes code the way **you** do. 100% local — no model, no network
 
 ## The `[Primer]` session brief
 A SessionStart hook injects a bounded `[Primer]` style brief each session (Claude / Cursor / Gemini /
-Codex / Antigravity / opencode, and Kimi on `--global`, in this build). Treat it as the
-user's coding-style preferences and apply them. Project conventions and explicit in-session
-instructions win over the stored brief.
+Codex / opencode, and Kimi on `--global`, in this build; Antigravity and Qoder have no session-start
+hook, so this policy doc is their carrier). Treat it as the user's coding-style preferences and apply
+them. Project conventions and explicit in-session instructions win over the stored brief.
+
+If a `primer_*` MCP call returns nothing for a project that should have preferences, the MCP host may
+have launched the server outside the project — retry with `projectPath: "<absolute project root>"`.
 
 ## Guardrails
 - **Only record durable, real preferences** — never task-specific one-offs, never your own opinion.

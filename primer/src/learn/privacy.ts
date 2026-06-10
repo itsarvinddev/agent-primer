@@ -95,6 +95,8 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, '[REDACTED_GH_TOKEN]'],
   [/\bxox[baprs]-[A-Za-z0-9-]{10,}/g, '[REDACTED_SLACK_TOKEN]'],
   [/\bAIza[0-9A-Za-z_-]{20,}/g, '[REDACTED_GOOGLE_KEY]'],
+  [/\bsk-[A-Za-z0-9_-]{16,}/g, '[REDACTED_API_KEY]'], // OpenAI / Anthropic (sk-ant-…) style keys
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g, '[REDACTED_JWT]'],
   [/\b(bearer\s+)[A-Za-z0-9._-]{16,}/gi, '$1[REDACTED]'],
   [/((?:api[_-]?key|secret|token|password|passwd|pwd|access[_-]?token|client[_-]?secret)\s*[:=]\s*['"]?)[^'"\s]{8,}(['"]?)/gi, '$1[REDACTED]$2'],
 ];

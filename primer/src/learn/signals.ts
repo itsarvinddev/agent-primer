@@ -35,6 +35,22 @@ function toRepoRelative(filePath: string, cwd: string): string {
   return filePath;
 }
 
+export const PROCESSED_RETENTION_DAYS = 45;
+export const MAX_PENDING_SIGNALS = 500;
+
+/**
+ * Bounded housekeeping on the write path so the DB never grows without limit:
+ * processed signals expire after PROCESSED_RETENTION_DAYS, and the unprocessed
+ * backlog is capped at MAX_PENDING_SIGNALS (oldest dropped first).
+ */
+export function pruneSignals(db: DatabaseSync): void {
+  const cutoff = new Date(Date.now() - PROCESSED_RETENTION_DAYS * 86_400_000).toISOString();
+  db.prepare('DELETE FROM signals WHERE processed = 1 AND created_at < ?').run(cutoff);
+  db.prepare(
+    'DELETE FROM signals WHERE processed = 0 AND id NOT IN (SELECT id FROM signals WHERE processed = 0 ORDER BY created_at DESC, id DESC LIMIT ?)',
+  ).run(MAX_PENDING_SIGNALS);
+}
+
 export function recordSignal(db: DatabaseSync, input: SignalInput): CaptureResult {
   const cwd = input.cwd ?? process.cwd();
   const rel = toRepoRelative(input.filePath, cwd);
@@ -56,6 +72,7 @@ export function recordSignal(db: DatabaseSync, input: SignalInput): CaptureResul
       input.agent ?? null,
       nowIso(),
     );
+  pruneSignals(db);
   return { captured: true, id: Number(info.lastInsertRowid) };
 }
 

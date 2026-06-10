@@ -23,6 +23,18 @@ describe('privacy filters', () => {
     expect(scrubSecrets('const x = 1')).toBe('const x = 1');
   });
 
+  it('scrubs modern API keys and JWTs', () => {
+    expect(scrubSecrets(`fetch(url, { key: "sk-ant-api03-${'a'.repeat(24)}" })`)).toContain('[REDACTED_API_KEY]');
+    // the assignment pattern fires first here — what matters is the key is gone
+    const assigned = scrubSecrets(`openai.apiKey = "sk-proj-${'b'.repeat(20)}"`);
+    expect(assigned).toContain('[REDACTED');
+    expect(assigned).not.toContain('sk-proj');
+    const jwt = `eyJ${'h'.repeat(12)}.eyJ${'p'.repeat(12)}.${'s'.repeat(12)}`;
+    expect(scrubSecrets(`auth("${jwt}")`)).toContain('[REDACTED_JWT]');
+    // plain identifiers that merely start with sk are untouched
+    expect(scrubSecrets('const skill = skLevel + 1')).toBe('const skill = skLevel + 1');
+  });
+
   it('caps excerpt size', () => {
     const big = Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n');
     expect(capExcerpt(big)).toContain('…[truncated]');

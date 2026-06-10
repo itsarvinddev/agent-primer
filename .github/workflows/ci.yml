@@ -29,14 +29,15 @@ jobs:
           git diff --exit-code -- agent-primer.sh \
             || { echo "::error::agent-primer.sh is stale — run ./make-portable.sh and commit"; exit 1; }
 
-  # primer (TS/Node) — cross-Node + cross-OS. Floor is Node 24: node:sqlite ships the
-  # FTS5 module from v24 (older Node lacks it), and node:sqlite needs no flag on 24+.
+  # primer (TS/Node) — cross-Node + cross-OS (the npm kit is the Windows-native path,
+  # so Windows runs the full suite). Floor is Node 24: node:sqlite ships the FTS5
+  # module from v24 (older Node lacks it), and node:sqlite needs no flag on 24+.
   primer:
     name: primer (node ${{ matrix.node }} / ${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         node: ['24', 'latest']
     runs-on: ${{ matrix.os }}
     defaults:

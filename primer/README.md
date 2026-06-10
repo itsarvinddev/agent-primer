@@ -54,6 +54,11 @@ it works on Windows, macOS, and Linux.
 If you run setup with `npx`, any persistent hook or MCP entry is written so it can resolve Primer
 again later instead of pointing at npm's temporary cache.
 
+The CodeGraph startup hook is wired in bootstrap mode. On the first agent session in a new repo, it
+tries to install/register CodeGraph if needed, build the local `.codegraph/` index, and then let the
+agent continue the original task with structural context. If command approval or a restart is needed,
+the agent gets exact recovery commands instead of a vague setup note.
+
 ## Day-To-Day Use
 
 Most of the time, you just use your agent normally.

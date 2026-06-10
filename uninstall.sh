@@ -75,6 +75,9 @@ for _a in $AGENTS; do case " $KNOWN_AGENTS " in *" $_a "*) ;; *) _bad="$_bad $_a
 IFS="$_oldifs"
 [ -n "$_bad" ] && { echo "error: unknown agent(s):$_bad" >&2; echo "known agents: $KNOWN_AGENTS" >&2; exit 2; }
 
+# Kimi Code's home is relocatable via KIMI_CODE_HOME (default ~/.kimi-code).
+KIMI_HOME="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
+
 # Scope-aware paths — MUST match install.sh exactly so we remove what it placed.
 if [ "$SCOPE" = "project" ]; then
   TARGET="${TARGET:-$PWD}"
@@ -103,10 +106,10 @@ else
   CURSOR_RULE_DIR=""
   SETTINGS="$HOME/.claude/settings.json"; CFILE="$HOME/.codex/hooks.json"
   HFILE="$HOME/.cursor/hooks.json"; GS="$HOME/.gemini/settings.json"
-  AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"
+  AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"   # legacy: older installs wired this (Antigravity has no session-start hook)
   OPENCODE_PLUG="$HOME/.config/opencode/plugins/codegraph-session-check.js"
-  KIMI_SKILLS="$HOME/.kimi-code/skills"
-  KCONF="$HOME/.kimi-code/config.toml"
+  KIMI_SKILLS="$KIMI_HOME/skills"
+  KCONF="$KIMI_HOME/config.toml"
 fi
 
 PY="$(command -v python3 || true)"
@@ -342,6 +345,8 @@ if selected opencode; then rm_path "$OPENCODE_PLUG"; rm_path "${OPENCODE_PLUG%/*
 if selected antigravity; then
   [ -n "$ANTI_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$ANTI_RULE_DIR/$n.md"; done
   strip_markers "$ANTI_INSTR"; unhook_json "$AH" antigravity
+  # Older installs created a (non-functional) global plugin dir wholly owned by us — remove it.
+  [ "$SCOPE" = "global" ] && rm_path "$HOME/.gemini/antigravity-cli/plugins/agent-primer"
 fi
 if selected kimi; then
   for n in $KIMI_SKILL_NAMES; do rm_path "$KIMI_SKILLS/$n"; done

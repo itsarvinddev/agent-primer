@@ -18,8 +18,9 @@ understand the code.
 
 Agent-Primer gives them a common baseline:
 
-- **CodeGraph setup**: nudges the agent to install and index the repo with CodeGraph, a local code
-  structure tool for definitions, callers, callees, traces, and impact.
+- **CodeGraph bootstrap**: installs/registers CodeGraph when needed and indexes a new repo on the
+  first hit, so structural questions use definitions, callers, callees, traces, and impact instead
+  of slow file-reading.
 - **Careful coding habits**: asks agents to make small, focused changes, avoid guessing, and verify
   before calling work done.
 - **Superpowers methodology**: guides agents toward systematic, test-first work and can bootstrap the
@@ -92,12 +93,30 @@ At session start, the CodeGraph hook checks whether the project is ready:
 session starts
   -> is the codegraph CLI installed?
   -> is this project indexed with .codegraph/?
-  -> if setup is missing, show the agent exactly what to run
+  -> if setup is missing, bootstrap CLI/MCP/index first
   -> if setup is done, stay quiet
 ```
 
-The hook is read-only and exits successfully. It does not block your agent. Once a project has a
-`.codegraph/` index, the hook becomes quiet by default.
+Installed hooks run in bootstrap mode by default. On a new repo they try to create the local
+`.codegraph/` index before the agent answers the first task. If the CLI itself is missing, the hook
+tries to install CodeGraph, register its MCP server, and build the repo index. If a command needs
+approval or fails because of PATH/network/permissions, the agent is told to run the exact setup
+commands first, then continue the original task. Once a project has a `.codegraph/` index, the hook
+becomes quiet by default.
+
+The bootstrap is built to never get in your way:
+
+- Every step is time-bounded, so a dead network or a hung daemon cannot stall session start.
+- If indexing a large repo outruns its budget, it keeps indexing in the background and the agent is
+  told to proceed and check `codegraph status` before relying on the index.
+- Auto-install and auto-index only happen inside a git repository (never in `$HOME` or scratch
+  folders), and a freshly created index is gitignored automatically.
+- A failed CLI install is not retried for an hour, so an offline machine gets fast session starts.
+- The hook repairs the common `~/.local/bin` PATH gap that GUI-launched agents inherit, instead of
+  concluding CodeGraph "is not installed".
+
+Prefer that hooks never install or index anything by themselves? Install with `--no-bootstrap` and
+they will only print the exact commands for the agent to run through its normal approval flow.
 
 If you installed Primer, Agent-Primer also wires a local style-memory loop:
 
@@ -115,13 +134,9 @@ agent does any learning work from local signals.
 
 ## Day-To-Day Use
 
-After setup, use your coding agent normally.
-
-On a new repo, the agent may ask to initialize CodeGraph:
-
-```bash
-codegraph init -i
-```
+After setup, use your coding agent normally. On a new repo, the first agent session should bootstrap
+CodeGraph and then continue the requested task. You should not have to turn a project-analysis prompt
+into a separate setup conversation.
 
 If the CodeGraph MCP tools are not available yet, restart the agent or IDE. Until then, the
 `codegraph` command-line tool can still be used directly.
@@ -160,6 +175,9 @@ Common examples:
 # Preview changes without writing files
 ./install.sh --global --dry-run
 
+# Hooks instruct only; never auto-install or auto-index at session start
+./install.sh --global --no-bootstrap
+
 # Add optional bundles
 ./install.sh --global --with mcp,rules
 
@@ -187,12 +205,12 @@ has a Node requirement.
 |---|---|
 | Claude Code | Instructions, rules, hooks, MCP setup |
 | Codex | `AGENTS.md`, hooks, MCP setup |
-| Cursor | `AGENTS.md`, Cursor rules, hooks, MCP setup |
+| Cursor | Cursor rules, hooks, MCP setup |
 | Gemini CLI | `GEMINI.md`, hooks, MCP setup |
-| opencode | `AGENTS.md`, plugin hook, MCP setup |
-| Antigravity | `AGENTS.md`, rules, hooks |
-| Kimi Code | Skills and global hook support |
-| Qoder | Rules and instructions; no SessionStart hook |
+| opencode | `AGENTS.md` (primary carrier), best-effort plugin hook, MCP setup |
+| Antigravity | `GEMINI.md`/`AGENTS.md` and rules; it has no session-start hook event |
+| Kimi Code | Skills and global hook support (honors `KIMI_CODE_HOME`) |
+| Qoder | Rules and instructions; no session-start hook event |
 
 Exact file locations differ by global vs project install, but the installer prints what it writes.
 

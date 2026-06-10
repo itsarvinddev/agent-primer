@@ -14,10 +14,11 @@ package). By default it runs in **once-per-project** mode: it injects a `[CodeGr
 **only while the project still needs setup** (no `codegraph` CLI, or no `.codegraph/` index yet);
 once the project is indexed it goes **silent**. So:
 
-- **A `[CodeGraph]` setup block IS present →** the project isn't set up yet; follow it (and the
-  decision tree below) before starting the task. If setup needs user consent, ask immediately with
-  the host's structured prompt/confirmation dialog when one is available; do not bury it as "let me
-  know if you want."
+- **A `[CodeGraph]` setup block IS present →** the project isn't set up yet. In the normal installed
+  hook path Agent-Primer already tries to bootstrap CodeGraph before the model sees the task. If a
+  setup block still appears, treat it as a hard stop: the next assistant action must be running the
+  listed setup command(s) with normal command approval UI if needed. Do not analyze the project
+  first, and do not bury setup as "let me know if you want."
 - **No `[CodeGraph]` block appears (in a hook-wired repo) →** the project is **already set up — just
   proceed**, and prefer `codegraph_*` tools. Do **not** re-run `codegraph init`/`status` "to be safe":
   the file-watcher keeps the index fresh, and re-checking every session is the noise this mode removes.
@@ -31,22 +32,21 @@ once the project is indexed it goes **silent**. So:
 
 ## The one-time setup decision tree (first time you work in a project)
 
-When one of the steps below needs consent, prefer a structured prompt dialog over a plain assistant
-message. Use the same kind of user-choice UI your host uses for permissions, command approvals, or
-explicit user input (for example a `request_user_input` / confirm-style tool when available), with a
-clear Yes option and a No option. Fall back to a concise chat question only when no such dialog tool
-exists.
+When one of the steps below needs setup, stop before doing any task work. Use the host's normal
+command approval UI as the permission step: run the listed command(s), let the user approve or deny
+the command execution there, then continue. Do not ask a separate yes/no chat question first. If
+command execution is unavailable or the user declines approval, say that once and then proceed
+without CodeGraph. Do not inspect files, analyze the project, or answer the user's task before this
+setup path has either succeeded or been explicitly blocked.
 
 1. **Is the `codegraph` CLI installed?** — `command -v codegraph` (or `codegraph --version`).
-   - **No →** ask the user this exact simple question, then install if they say yes:
-     "CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
-     `<install command>`, `codegraph install -y`, and `codegraph init -i`."
+   - **No →** run the platform install command, then `codegraph install -y`, then `codegraph init -i`.
+     Use the exact install URL; never abbreviate it or replace it with a placeholder.
      Use `codegraph install -y` (non-interactive). A bare `codegraph install` opens an interactive
      agent-picker prompt that has no TTY in an agent context and will hang session startup.
 2. **Is THIS project indexed?** — does `.codegraph/` exist at the repo root, and does
    `codegraph status` succeed?
-   - **No →** ask: "CodeGraph is installed, but this repo is not indexed yet. Want me to run
-     `codegraph init -i` now?" If yes, run it.
+   - **No →** run `codegraph init -i` before task work.
 3. **Index freshness** — after the initial `init -i`, CodeGraph's file-watcher keeps the index in
    sync with the working tree automatically; you do **not** need to run `codegraph status` / `sync`
    at the start of every session. Only if you have a concrete reason to suspect drift (e.g. a large
@@ -61,9 +61,11 @@ may be weaker.
 
 ## Installing from scratch (when the CLI is missing)
 
-You may install and set CodeGraph up when the user says yes. **Ask directly; do not wait for the user
-to infer what to do from a passive note. Use a prompt dialog when your host exposes one.** Then
-announce each command before running it (it touches the user's machine), in order:
+You may install and set CodeGraph up as part of the first-hit bootstrap. **Run setup before task
+work; do not wait for the user to infer what to do from a passive note.** Installed hooks may
+bootstrap automatically. If the agent is manually recovering after bootstrap failed, announce each
+command through the normal tool/command UI before running it (it touches the user's machine), in
+order. Never abbreviate or placeholder the install URL in the command list.
 
 | Step | Command | Purpose |
 |---|---|---|
@@ -105,16 +107,32 @@ Registering the MCP server (`codegraph install -y`) makes the `codegraph_*` **MC
 
 ---
 
+## Recovering from `codegraph_*` MCP errors (do this, never silently fall back to grep)
+
+These two errors have exact, one-step recoveries. Apply them and retry the same call — do not
+abandon CodeGraph for native file reading after one failed MCP call:
+
+| Error text contains | What it means | Your next action |
+|---|---|---|
+| `No CodeGraph project is loaded` | The MCP server was launched outside the project and didn't detect the workspace root. The index is likely fine. | Retry the SAME tool call with `projectPath: "<absolute project root>"`. Keep passing it for the rest of the session. |
+| `not initialized` / `Run 'codegraph init'` | This project has no `.codegraph/` index yet. | Run `codegraph init -i` from the project root (command approval UI is the consent step), then retry the tool call. |
+| MCP tools entirely absent but `codegraph` CLI works | The MCP server wasn't loaded (needs restart, or PATH mismatch — see above). | Use the `codegraph` CLI via shell for this session; ask the user to restart for the MCP tools. |
+
+---
+
 ## Don'ts
 
-- **Don't be passive when setup is missing.** Do not say "I won't set it up unless you want me to" or
-  "flag it if you'd like." Ask the direct setup question immediately, preferably via a prompt dialog,
-  then act on the answer.
+- **Don't be passive when setup is missing.** Do not say "I won't set it up unless you want me to,"
+  "flag it if you'd like," or "A note on the session-start prompt" after answering the task. Run the
+  setup path immediately, using command approval UI if needed, then continue the original task. This
+  applies to EVERY first message — a greeting, "analyze this project", anything: setup is the action
+  you take first, not a footnote under the answer.
 - **Don't re-run the setup check once the project is already indexed.** A missing `[CodeGraph]` hook
   block in a wired repo means "set up — proceed," not "re-check"; re-running `init`/`status` every
   session is exactly the noise once-mode removes. Trust the file-watcher (or install with `--always`).
-- **Don't silently `curl | sh`** without announcing it — installing software touches the user's
-  machine; say what you're running first.
+- **Don't silently `curl | sh` from an agent reply** without announcing it — installing software
+  touches the user's machine; use the normal command/tool UI. The installed SessionStart hook is the
+  exception: it may bootstrap automatically because the user already installed Agent-Primer.
 - **Don't run `codegraph uninit` / `uninstall`** unless the user explicitly asks.
 - **Don't re-query `codegraph_*` immediately after editing a file** in the same turn — the watcher
   debounces ~500 ms behind writes; `codegraph sync` or wait a beat first.
@@ -125,7 +143,8 @@ Registering the MCP server (`codegraph install -y`) makes the `codegraph_*` **MC
 ## Precedence
 
 Where this project's auto-generated CodeGraph block (between `<!-- CODEGRAPH_START -->` and
-`<!-- CODEGRAPH_END -->` in `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/codegraph.mdc`) says to
-*ask the user before running `codegraph init -i`*, **this rule supersedes it**: at session start you
-may initialize/sync automatically (announcing commands). That managed block is regenerated by
-`codegraph install`, so this rule lives in a separate, unmanaged file on purpose.
+`<!-- CODEGRAPH_END -->` in `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/codegraph.mdc`) says to ask
+the user before running setup, **this rule clarifies the mechanism**: command approval is the consent
+UI. Run setup before any task work unless command execution is unavailable or approval is declined.
+That managed block is regenerated by `codegraph install`, so this rule lives in a separate,
+unmanaged file on purpose.

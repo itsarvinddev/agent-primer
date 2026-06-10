@@ -15,32 +15,48 @@ cat > "$DEST/codegraph-session-check.sh" <<'CG_EOF_SCRIPT'
 # (Claude Code, Codex, Gemini, Antigravity, Kimi), a sessionStart hook (Cursor),
 # or invoked from a session.created plugin (opencode). Safe to run standalone.
 #
-# It NEVER mutates anything and ALWAYS exits 0 — it only inspects the index and
-# emits a directive telling the agent what to do (install / init / proceed).
-# The agent performs any install itself, per codegraph-policy.md, announcing commands.
+# It ALWAYS exits 0 so it never bricks session start. With --bootstrap (the mode
+# Agent-Primer wires into installed hooks), it may install/register CodeGraph and
+# build the repo-local .codegraph/ index before the model sees the task. Without
+# --bootstrap it stays read-only and emits command-first recovery instructions.
 #
-# By DEFAULT it runs in "once per project" mode: it nudges every session UNTIL the
-# project is set up (CLI present + .codegraph/ at the project root), then goes SILENT
+# By DEFAULT it runs in "once per project" mode: bootstrap or instruct UNTIL the
+# project is set up (CLI present + index DB at the project root), then go SILENT
 # on later sessions (emits nothing; skips `codegraph status` for a fast no-op). Index
 # freshness after that is handled by CodeGraph's own file-watcher. Pass --always to
-# restore the legacy every-session behavior (print `codegraph status` + a reminder
-# even when the index is already present).
+# print `codegraph status` every session even when the index is already present.
+#
+# Robustness rules this script lives by (hooks run unattended, on every host):
+#   * EVERY external command is time-bounded — a hung network call or daemon must
+#     never stall session start past the host's hook timeout (Kimi kills at ~10s
+#     unless raised; a killed hook emits NOTHING and the agent flies blind).
+#   * PATH is augmented with the usual user-bin dirs first — GUI-launched agents
+#     often miss ~/.local/bin (where the CodeGraph installer links the binary),
+#     which otherwise reads as "not installed" and triggers a pointless reinstall.
+#   * Auto-bootstrap only ever runs inside a git repo that is not $HOME — never
+#     auto-index someone's home directory or a scratch folder.
+#   * A failed CLI auto-install is not retried for an hour (marker file), so a dead
+#     network can't add a curl|sh attempt to every session start.
+#   * If indexing outlives its time budget it continues in the BACKGROUND and the
+#     agent is told to proceed and check `codegraph status` before trusting MCP.
 #
 # Usage:
-#   codegraph-session-check.sh [--format text|json|cursor] [--project DIR] [--always]
+#   codegraph-session-check.sh [--format text|json|cursor] [--project DIR] [--bootstrap] [--always]
 #
 # Formats:
 #   text    plain stdout (default; Claude Code / Codex add SessionStart stdout to context)
 #   json    {"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}
 #   cursor  {"additional_context":"…"}
 #
-# --always  every-session mode: branch 3 prints status as before (default: silent once set up)
+# --bootstrap  install/register/index automatically before the first task when needed
+# --always     every-session mode: branch 3 prints status as before (default: silent once set up)
 
 set -u
 
 FORMAT="text"
 PROJECT_DIR=""
 ALWAYS=0
+BOOTSTRAP=0
 
 while [ "$#" -gt 0 ]; do
   # NOTE: `shift 2` fails and shifts nothing on bash 3.2 when the flag is the last
@@ -52,28 +68,197 @@ while [ "$#" -gt 0 ]; do
     --project) PROJECT_DIR="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --project=*) PROJECT_DIR="${1#*=}"; shift ;;
     --always) ALWAYS=1; shift ;;
+    --bootstrap) BOOTSTRAP=1; shift ;;
     *) shift ;;
   esac
 done
 
+# A hook can be launched with a stripped environment; never let an unset HOME make
+# `set -u` kill us before we could emit anything.
+HOME="${HOME:-${USERPROFILE:-/tmp}}"
+
 # Resolve the project directory: explicit flag > known hook env vars > CWD.
+# (Claude/Cursor export CLAUDE_PROJECT_DIR; Gemini exports GEMINI_PROJECT_DIR;
+# Cursor also CURSOR_PROJECT_DIR. Cursor GLOBAL hooks run from ~/.cursor, so the
+# env vars — not PWD — are what make the global wiring correct there.)
 if [ -z "$PROJECT_DIR" ]; then
-  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${CODEX_PROJECT_DIR:-${PWD:-.}}}"
+  PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${GEMINI_PROJECT_DIR:-${CURSOR_PROJECT_DIR:-${CODEX_PROJECT_DIR:-${PWD:-.}}}}}"
 fi
+# Normalize to an absolute path so the $HOME guard and emitted hints are exact.
+PROJECT_DIR="$(cd "$PROJECT_DIR" 2>/dev/null && pwd || printf '%s' "$PROJECT_DIR")"
 
 INSTALL_SH="curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh"
 
+# Where the CodeGraph installer links the binary (~/.local/bin) is frequently NOT on
+# the PATH a GUI-launched agent inherits. Augment PATH up front so an installed CLI
+# is recognized instead of re-installed. (AGENT_PRIMER_NO_PATH_AUGMENT disables this
+# for tests that need a hermetic PATH.)
+if [ -z "${AGENT_PRIMER_NO_PATH_AUGMENT:-}" ]; then
+  for _d in "$HOME/.local/bin" "$HOME/bin" /usr/local/bin /opt/homebrew/bin; do
+    case ":$PATH:" in *":$_d:"*) ;; *) [ -d "$_d" ] && PATH="$PATH:$_d" ;; esac
+  done
+  export PATH
+fi
+
+# State dir for cross-session markers (install backoff). Overridable for tests.
+STATE_DIR="${AGENT_PRIMER_STATE_DIR:-$HOME/.agent-primer}"
+INSTALL_MARKER="$STATE_DIR/codegraph-install.last-attempt"
+
+# Time budgets (seconds). Their sum stays well under Claude's 600s default hook
+# timeout; on hosts with tighter limits the per-step bounds keep us responsive and
+# the index step falls back to a background run instead of dying mid-way.
+INSTALL_BUDGET=25
+REGISTER_BUDGET=15
+INDEX_BUDGET=20
+STATUS_BUDGET=8
+
 # --- helpers ---------------------------------------------------------------
 
-run_status() {
-  # Bounded so a hung daemon can never block session start.
+# run_bounded SECONDS CMD ARGS… — never let a child run past its budget.
+# Prefers timeout(1)/gtimeout(1); falls back to perl's alarm (macOS has no coreutils
+# timeout by default); as a last resort runs unbounded. Timeout → exit 124/142.
+run_bounded() {
+  _secs="$1"; shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout 8 codegraph status 2>&1
+    timeout "$_secs" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout 8 codegraph status 2>&1
+    gtimeout "$_secs" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV' "$_secs" "$@"
   else
-    codegraph status 2>&1
+    "$@"
   fi
+}
+
+timed_out() { [ "$1" = 124 ] || [ "$1" = 142 ]; }   # GNU timeout=124, SIGALRM=142
+
+run_status() {
+  run_bounded "$STATUS_BUDGET" codegraph status 2>&1
+}
+
+# Auto-bootstrap is allowed only in a real project: a git repo that isn't $HOME.
+# (Indexing a home dir or a scratch folder is slow, useless, and surprising.)
+safe_to_bootstrap() {
+  [ -e "$PROJECT_DIR/.git" ] || return 1
+  [ "$PROJECT_DIR" != "$HOME" ] || return 1
+  return 0
+}
+
+# A failed CLI install is not retried within an hour, so a broken network never
+# adds a curl|sh stall to every session start.
+install_recently_attempted() {
+  [ -f "$INSTALL_MARKER" ] || return 1
+  find "$INSTALL_MARKER" -mmin -60 2>/dev/null | grep -q .
+}
+
+mark_install_attempt() {
+  mkdir -p "$STATE_DIR" 2>/dev/null && : > "$INSTALL_MARKER" 2>/dev/null
+}
+
+clear_install_attempt() {
+  rm -f "$INSTALL_MARKER" 2>/dev/null
+}
+
+# The per-machine .codegraph/ index must never be committed; codegraph's own
+# .codegraph/.gitignore covers files inside it but not the directory itself.
+ensure_codegraph_gitignore() {
+  [ -e "$PROJECT_DIR/.git" ] || return 0
+  _gi="$PROJECT_DIR/.gitignore"
+  if [ -f "$_gi" ] && grep -qE '^/?\.codegraph/?$' "$_gi" 2>/dev/null; then return 0; fi
+  printf '\n# codegraph: local code-structure index (rebuilt per machine; do not commit)\n.codegraph/\n' >> "$_gi" 2>/dev/null || true
+}
+
+# Index this project, bounded. Exit: 0 = indexed, 2 = still indexing in background,
+# 1 = failed. A repo too big for the foreground budget keeps indexing detached so
+# the session starts fast and the index is ready shortly after.
+bootstrap_index() {
+  ( cd "$PROJECT_DIR" 2>/dev/null && run_bounded "$INDEX_BUDGET" codegraph init -i >/dev/null 2>&1 )
+  _rc=$?
+  if [ "$_rc" = 0 ]; then ensure_codegraph_gitignore; return 0; fi
+  if timed_out "$_rc"; then
+    ( cd "$PROJECT_DIR" 2>/dev/null && nohup codegraph init -i >/dev/null 2>&1 & ) 2>/dev/null
+    ensure_codegraph_gitignore
+    return 2
+  fi
+  return 1
+}
+
+bootstrap_missing_cli() {
+  # 1) install the CLI (network); 2) refresh PATH (installer links ~/.local/bin —
+  # which may not have EXISTED at script start, so the startup augmentation could
+  # not have added it; append unconditionally now); 3) register the MCP server
+  # NON-interactively; 4) index handled by the caller.
+  run_bounded "$INSTALL_BUDGET" sh -c "$INSTALL_SH" >/dev/null 2>&1 || return 1
+  PATH="$PATH:$HOME/.local/bin:$HOME/bin"; export PATH
+  hash -r 2>/dev/null || true
+  command -v codegraph >/dev/null 2>&1 || return 1
+  run_bounded "$REGISTER_BUDGET" codegraph install -y >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# A very recent bare .codegraph/ (dir present, no db yet) usually means another
+# session — or a background run this script started earlier — is indexing RIGHT
+# NOW. Don't stack a second indexer on top of it; a stale bare dir (crashed init)
+# falls through and is re-indexed normally.
+index_in_progress() {
+  [ -d "$PROJECT_DIR/.codegraph" ] || return 1
+  index_initialized && return 1
+  find "$PROJECT_DIR/.codegraph" -maxdepth 0 -mmin -10 2>/dev/null | grep -q .
+}
+
+MCP_RECOVERY_HINT="If a codegraph_* MCP call fails with \"No CodeGraph project is loaded\", retry it with
+projectPath: \"${PROJECT_DIR}\". If it fails with \"not initialized\", run \`codegraph init -i\` in
+${PROJECT_DIR} once, then retry."
+
+emit_bootstrap_success() {
+  # $1 = message. The original task should now continue without waiting on the user.
+  emit "[CodeGraph bootstrap complete]
+$1
+
+Proceed with the user's original task now. Prefer codegraph_* MCP tools after restart; until then,
+use the \`codegraph\` CLI directly for structural questions (definitions, callers/callees, impact,
+traces, file maps). ${MCP_RECOVERY_HINT}"
+}
+
+emit_bootstrap_background() {
+  emit "[CodeGraph indexing in background]
+$1
+
+Proceed with the user's original task now using native tools. Before relying on codegraph_* MCP
+tools or the \`codegraph\` CLI for structural answers, check \`codegraph status\` once — the index
+becomes available as soon as the background run finishes. Do not re-run \`codegraph init\`."
+}
+
+emit_bootstrap_failure() {
+  # $1 = failure summary. The agent should recover by running the exact commands with normal command
+  # approval UI rather than turning this into a passive note.
+  emit "[CodeGraph bootstrap failed]
+$1
+
+STOP: do not inspect files, analyze project structure, or answer the user's task yet.
+Your next assistant action MUST be to run the setup command(s) below using the host's normal command
+approval UI if needed. Do not ask a yes/no chat question first; the command approval dialog is the
+permission step. If command execution is unavailable or the user declines a command approval, say
+that once and then proceed without CodeGraph.
+
+Commands:
+  ${INSTALL_SH}
+  codegraph install -y
+  codegraph init -i
+
+After the commands succeed, continue the user's original task immediately using the \`codegraph\`
+CLI. Never append this as an after-the-fact note once the task is already answered."
+}
+
+# Softer, non-blocking note for directories we refuse to auto-index (not a git
+# repo, or $HOME itself). No STOP: this may not be a coding session at all.
+emit_nonproject_note() {
+  emit "[CodeGraph not set up here]
+$1
+
+This directory was NOT auto-indexed (it is not a git repository root, or it is the home
+directory). If this session is about code in ${PROJECT_DIR}, run the command(s) above first via
+the normal command approval UI, then continue. Otherwise just proceed with the user's task."
 }
 
 json_escape() {
@@ -85,7 +270,7 @@ json_escape() {
   else
     printf '%s' "$1" | awk '
       BEGIN { ORS=""; print "\"" }
-      { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t") }
+      { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); gsub(/\t/, "\\t"); gsub(/\r/, "\\r") }
       { if (NR > 1) printf "\\n"; printf "%s", $0 }
       END { print "\"" }'
   fi
@@ -123,44 +308,90 @@ index_initialized() {
 # --- checks ----------------------------------------------------------------
 
 if ! command -v codegraph >/dev/null 2>&1; then
-  emit "[CodeGraph] The \`codegraph\` CLI is NOT installed in this environment.
-Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
-prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
-command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
-direct yes/no question in chat:
+  if [ "$BOOTSTRAP" = 1 ] && safe_to_bootstrap && ! install_recently_attempted; then
+    mark_install_attempt
+    if bootstrap_missing_cli; then
+      clear_install_attempt
+      bootstrap_index; _idx=$?
+      if [ "$_idx" = 0 ]; then
+        emit_bootstrap_success "Installed the CodeGraph CLI, registered its MCP server, and indexed this repo at ${PROJECT_DIR}."
+        exit 0
+      elif [ "$_idx" = 2 ]; then
+        emit_bootstrap_background "Installed the CodeGraph CLI and registered its MCP server; indexing of ${PROJECT_DIR} is still running in the background."
+        exit 0
+      fi
+      emit_bootstrap_failure "Installed the CodeGraph CLI, but indexing ${PROJECT_DIR} failed (only \`codegraph init -i\` still needs to run)."
+      exit 0
+    fi
+    emit_bootstrap_failure "Automatic install did not complete. The CLI may need a fresh PATH, network access, or a command approval. (Auto-install will not retry for an hour; run the commands below instead.)"
+    exit 0
+  fi
+  if [ "$BOOTSTRAP" = 1 ] && ! safe_to_bootstrap; then
+    emit_nonproject_note "The \`codegraph\` CLI is NOT installed in this environment. To set it up for a real project, run:
+  ${INSTALL_SH}
+  codegraph install -y
+  codegraph init -i   (from the project root)"
+    exit 0
+  fi
+  emit "[CodeGraph setup required before task work]
+The \`codegraph\` CLI is NOT installed in this environment.
 
-  CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
-    ${INSTALL_SH}
-    codegraph install -y
-    codegraph init -i
+STOP: do not inspect files, analyze project structure, or answer the user's task yet.
+Your next assistant action MUST be to run these exact setup commands using the host's normal command
+approval UI if needed. Do not ask a yes/no chat question first; the command approval dialog is the
+permission step.
 
-If the user says yes, announce each command, run the three commands, then ask them to RESTART this
-agent/IDE so the codegraph_* MCP tools load. (Use \`codegraph install -y\`: a bare \`codegraph
-install\` prompts interactively and hangs without a TTY.) After the restart, VERIFY the codegraph_*
-tools loaded; if they are missing, the binary is usually in ~/.local/bin off the agent's PATH — add
-it to PATH or re-register the MCP server's command with the absolute path. Until restart, use the
-\`codegraph\` CLI directly.
-If the user says no, proceed without CodeGraph and mention that structural code answers may be weaker."
+Commands:
+  ${INSTALL_SH}
+  codegraph install -y
+  codegraph init -i
+
+After the commands succeed, continue the user's original task immediately using the \`codegraph\`
+CLI. If command execution is unavailable or the user declines a command approval, say that once and
+then proceed without CodeGraph. Never append this as an after-the-fact note once the task is already
+answered."
   exit 0
 fi
 
 if ! index_initialized; then
-  emit "[CodeGraph] CLI present, but this project is NOT initialized (no index DB under
+  if [ "$BOOTSTRAP" = 1 ] && index_in_progress; then
+    emit_bootstrap_background "Indexing of ${PROJECT_DIR} already appears to be in progress (started moments ago by another session or a background run)."
+    exit 0
+  fi
+  if [ "$BOOTSTRAP" = 1 ] && safe_to_bootstrap; then
+    bootstrap_index; _idx=$?
+    if [ "$_idx" = 0 ]; then
+      emit_bootstrap_success "Indexed this repo at ${PROJECT_DIR}."
+      exit 0
+    elif [ "$_idx" = 2 ]; then
+      emit_bootstrap_background "Indexing of ${PROJECT_DIR} is still running in the background."
+      exit 0
+    fi
+    emit_bootstrap_failure "Automatic repo indexing did not complete in ${PROJECT_DIR}."
+    exit 0
+  fi
+  if [ "$BOOTSTRAP" = 1 ]; then
+    emit_nonproject_note "The \`codegraph\` CLI is installed, but ${PROJECT_DIR} is not indexed. To index a real
+project, run \`codegraph init -i\` from its root."
+    exit 0
+  fi
+  emit "[CodeGraph setup required before task work]
+The \`codegraph\` CLI is installed, but this project is NOT indexed (no index DB under
 ${PROJECT_DIR}/.codegraph/).
-Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
-prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
-command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
-direct yes/no question in chat:
 
-  CodeGraph is installed, but this repo is not indexed yet. Want me to run \`codegraph init -i\` now?
+STOP: do not inspect files, analyze project structure, or answer the user's task yet.
+Your next assistant action MUST be to run exactly \`codegraph init -i\` using the host's normal command
+approval UI if needed. Do not ask a yes/no chat question first; the command approval dialog is the
+permission step.
 
-If the user says yes, announce and run \`codegraph init -i\`. If the codegraph_* MCP tools are
-missing afterwards, run \`codegraph install -y\` and ask the user to restart this agent/IDE.
-If the user says no, proceed without CodeGraph and mention that structural code answers may be weaker."
+After indexing succeeds, continue the user's original task immediately using the \`codegraph\` CLI.
+If command execution is unavailable or the user declines a command approval, say that once and then
+proceed without CodeGraph. Never append this as an after-the-fact note once the task is already
+answered."
   exit 0
 fi
 
-# Branch 3: CLI present + .codegraph/ exists = this project is already set up.
+# Branch 3: CLI present + index DB exists = this project is already set up.
 # DEFAULT (once-mode): stay SILENT and skip `codegraph status` entirely — a fast no-op.
 # Freshness is the file-watcher's job; re-announcing every session is just noise.
 # Pass --always to restore the legacy every-session status + reminder output.
@@ -195,10 +426,11 @@ package). By default it runs in **once-per-project** mode: it injects a `[CodeGr
 **only while the project still needs setup** (no `codegraph` CLI, or no `.codegraph/` index yet);
 once the project is indexed it goes **silent**. So:
 
-- **A `[CodeGraph]` setup block IS present →** the project isn't set up yet; follow it (and the
-  decision tree below) before starting the task. If setup needs user consent, ask immediately with
-  the host's structured prompt/confirmation dialog when one is available; do not bury it as "let me
-  know if you want."
+- **A `[CodeGraph]` setup block IS present →** the project isn't set up yet. In the normal installed
+  hook path Agent-Primer already tries to bootstrap CodeGraph before the model sees the task. If a
+  setup block still appears, treat it as a hard stop: the next assistant action must be running the
+  listed setup command(s) with normal command approval UI if needed. Do not analyze the project
+  first, and do not bury setup as "let me know if you want."
 - **No `[CodeGraph]` block appears (in a hook-wired repo) →** the project is **already set up — just
   proceed**, and prefer `codegraph_*` tools. Do **not** re-run `codegraph init`/`status` "to be safe":
   the file-watcher keeps the index fresh, and re-checking every session is the noise this mode removes.
@@ -212,22 +444,21 @@ once the project is indexed it goes **silent**. So:
 
 ## The one-time setup decision tree (first time you work in a project)
 
-When one of the steps below needs consent, prefer a structured prompt dialog over a plain assistant
-message. Use the same kind of user-choice UI your host uses for permissions, command approvals, or
-explicit user input (for example a `request_user_input` / confirm-style tool when available), with a
-clear Yes option and a No option. Fall back to a concise chat question only when no such dialog tool
-exists.
+When one of the steps below needs setup, stop before doing any task work. Use the host's normal
+command approval UI as the permission step: run the listed command(s), let the user approve or deny
+the command execution there, then continue. Do not ask a separate yes/no chat question first. If
+command execution is unavailable or the user declines approval, say that once and then proceed
+without CodeGraph. Do not inspect files, analyze the project, or answer the user's task before this
+setup path has either succeeded or been explicitly blocked.
 
 1. **Is the `codegraph` CLI installed?** — `command -v codegraph` (or `codegraph --version`).
-   - **No →** ask the user this exact simple question, then install if they say yes:
-     "CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
-     `<install command>`, `codegraph install -y`, and `codegraph init -i`."
+   - **No →** run the platform install command, then `codegraph install -y`, then `codegraph init -i`.
+     Use the exact install URL; never abbreviate it or replace it with a placeholder.
      Use `codegraph install -y` (non-interactive). A bare `codegraph install` opens an interactive
      agent-picker prompt that has no TTY in an agent context and will hang session startup.
 2. **Is THIS project indexed?** — does `.codegraph/` exist at the repo root, and does
    `codegraph status` succeed?
-   - **No →** ask: "CodeGraph is installed, but this repo is not indexed yet. Want me to run
-     `codegraph init -i` now?" If yes, run it.
+   - **No →** run `codegraph init -i` before task work.
 3. **Index freshness** — after the initial `init -i`, CodeGraph's file-watcher keeps the index in
    sync with the working tree automatically; you do **not** need to run `codegraph status` / `sync`
    at the start of every session. Only if you have a concrete reason to suspect drift (e.g. a large
@@ -242,9 +473,11 @@ may be weaker.
 
 ## Installing from scratch (when the CLI is missing)
 
-You may install and set CodeGraph up when the user says yes. **Ask directly; do not wait for the user
-to infer what to do from a passive note. Use a prompt dialog when your host exposes one.** Then
-announce each command before running it (it touches the user's machine), in order:
+You may install and set CodeGraph up as part of the first-hit bootstrap. **Run setup before task
+work; do not wait for the user to infer what to do from a passive note.** Installed hooks may
+bootstrap automatically. If the agent is manually recovering after bootstrap failed, announce each
+command through the normal tool/command UI before running it (it touches the user's machine), in
+order. Never abbreviate or placeholder the install URL in the command list.
 
 | Step | Command | Purpose |
 |---|---|---|
@@ -286,16 +519,32 @@ Registering the MCP server (`codegraph install -y`) makes the `codegraph_*` **MC
 
 ---
 
+## Recovering from `codegraph_*` MCP errors (do this, never silently fall back to grep)
+
+These two errors have exact, one-step recoveries. Apply them and retry the same call — do not
+abandon CodeGraph for native file reading after one failed MCP call:
+
+| Error text contains | What it means | Your next action |
+|---|---|---|
+| `No CodeGraph project is loaded` | The MCP server was launched outside the project and didn't detect the workspace root. The index is likely fine. | Retry the SAME tool call with `projectPath: "<absolute project root>"`. Keep passing it for the rest of the session. |
+| `not initialized` / `Run 'codegraph init'` | This project has no `.codegraph/` index yet. | Run `codegraph init -i` from the project root (command approval UI is the consent step), then retry the tool call. |
+| MCP tools entirely absent but `codegraph` CLI works | The MCP server wasn't loaded (needs restart, or PATH mismatch — see above). | Use the `codegraph` CLI via shell for this session; ask the user to restart for the MCP tools. |
+
+---
+
 ## Don'ts
 
-- **Don't be passive when setup is missing.** Do not say "I won't set it up unless you want me to" or
-  "flag it if you'd like." Ask the direct setup question immediately, preferably via a prompt dialog,
-  then act on the answer.
+- **Don't be passive when setup is missing.** Do not say "I won't set it up unless you want me to,"
+  "flag it if you'd like," or "A note on the session-start prompt" after answering the task. Run the
+  setup path immediately, using command approval UI if needed, then continue the original task. This
+  applies to EVERY first message — a greeting, "analyze this project", anything: setup is the action
+  you take first, not a footnote under the answer.
 - **Don't re-run the setup check once the project is already indexed.** A missing `[CodeGraph]` hook
   block in a wired repo means "set up — proceed," not "re-check"; re-running `init`/`status` every
   session is exactly the noise once-mode removes. Trust the file-watcher (or install with `--always`).
-- **Don't silently `curl | sh`** without announcing it — installing software touches the user's
-  machine; say what you're running first.
+- **Don't silently `curl | sh` from an agent reply** without announcing it — installing software
+  touches the user's machine; use the normal command/tool UI. The installed SessionStart hook is the
+  exception: it may bootstrap automatically because the user already installed Agent-Primer.
 - **Don't run `codegraph uninit` / `uninstall`** unless the user explicitly asks.
 - **Don't re-query `codegraph_*` immediately after editing a file** in the same turn — the watcher
   debounces ~500 ms behind writes; `codegraph sync` or wait a beat first.
@@ -306,10 +555,11 @@ Registering the MCP server (`codegraph install -y`) makes the `codegraph_*` **MC
 ## Precedence
 
 Where this project's auto-generated CodeGraph block (between `<!-- CODEGRAPH_START -->` and
-`<!-- CODEGRAPH_END -->` in `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/codegraph.mdc`) says to
-*ask the user before running `codegraph init -i`*, **this rule supersedes it**: at session start you
-may initialize/sync automatically (announcing commands). That managed block is regenerated by
-`codegraph install`, so this rule lives in a separate, unmanaged file on purpose.
+`<!-- CODEGRAPH_END -->` in `CLAUDE.md` / `AGENTS.md` / `.cursor/rules/codegraph.mdc`) says to ask
+the user before running setup, **this rule clarifies the mechanism**: command approval is the consent
+UI. Run setup before any task work unless command execution is unavailable or approval is declined.
+That managed block is regenerated by `codegraph install`, so this rule lives in a separate,
+unmanaged file on purpose.
 CG_EOF_POLICY
 cat > "$DEST/karpathy-policy.md" <<'CG_EOF_KARPATHY'
 # Karpathy Coding Guidelines — reduce common LLM coding mistakes (every session, every agent)
@@ -616,7 +866,8 @@ primer is a local-first personal coding-intelligence engine wired by agent-prime
 `--with primer`. It learns your personal coding style from your edits and serves it over **MCP**,
 so the agent writes code the way **you** do. 100% local — no model, no network, no telemetry.
 *What CodeGraph is for code structure, primer is for your coding taste.* Opt-in via
-`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 24.
+`--with primer` (or the `@agent-primer/primer` package); needs Node ≥ 22.13 (best on 24+,
+where SQLite full-text search is built in).
 
 ## Use the `primer_*` MCP tools (available after a restart)
 - **Before** writing or editing code, call **`primer_apply`** (pass language/context) and apply the
@@ -630,9 +881,12 @@ so the agent writes code the way **you** do. 100% local — no model, no network
 
 ## The `[Primer]` session brief
 A SessionStart hook injects a bounded `[Primer]` style brief each session (Claude / Cursor / Gemini /
-Codex / Antigravity / opencode, and Kimi on `--global`, in this build). Treat it as the
-user's coding-style preferences and apply them. Project conventions and explicit in-session
-instructions win over the stored brief.
+Codex / opencode, and Kimi on `--global`, in this build; Antigravity and Qoder have no session-start
+hook, so this policy doc is their carrier). Treat it as the user's coding-style preferences and apply
+them. Project conventions and explicit in-session instructions win over the stored brief.
+
+If a `primer_*` MCP call returns nothing for a project that should have preferences, the MCP host may
+have launched the server outside the project — retry with `projectPath: "<absolute project root>"`.
 
 ## Guardrails
 - **Only record durable, real preferences** — never task-specific one-offs, never your own opinion.
@@ -700,6 +954,7 @@ KNOWN_BUNDLES="mcp tools rules skills agent-extensions"
 KNOWN_SOLO="primer"               # opt-in (needs Node); NEVER part of `--with all`
 DRYRUN=0
 ALWAYS=0   # 1 => thread --always into every wired hook command (legacy every-session mode)
+NOBOOTSTRAP=0  # 1 => wire instruct-only hooks (no auto install/index at session start)
 FAILED=0   # set to 1 by any failed write/merge; controls the final exit code
 
 usage() {
@@ -713,6 +968,7 @@ Usage:
   install.sh ... --agents a,b    only these agents (comma-separated; default: all)
   install.sh ... --dry-run       show what would happen, write nothing
   install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
+  install.sh ... --no-bootstrap  hooks only instruct (never auto install/index at session start)
   install.sh ... --with a,b      also install opt-in bundles: mcp, tools, rules, skills, agent-extensions (or 'all')
   install.sh ... --with primer   wire the local coding-style engine (Node>=22.13; not in 'all')
   install.sh --version           print version and exit
@@ -732,6 +988,7 @@ while [ "$#" -gt 0 ]; do
     --agents=*) AGENTS="${1#*=}"; shift ;;
     --dry-run) DRYRUN=1; shift ;;
     --always) ALWAYS=1; shift ;;
+    --no-bootstrap) NOBOOTSTRAP=1; shift ;;
     --with) WITH="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --with=*) WITH="${1#*=}"; shift ;;
     --version) echo "agent-primer $VERSION"; exit 0 ;;
@@ -812,6 +1069,9 @@ fi
 PY="$(command -v python3 || true)"
 HAVE_PY=0; [ -n "$PY" ] && HAVE_PY=1
 
+# Kimi Code's home is relocatable via KIMI_CODE_HOME (default ~/.kimi-code).
+KIMI_HOME="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
+
 note() { printf '[agent-primer] %s\n' "$*"; }
 
 # JSON-encode a string to a safe double-quoted literal (for embedding a path into
@@ -876,15 +1136,18 @@ PY
 }
 
 # Merge a session-start command hook into a JSON config (idempotent). Falls back
-# to printing the snippet when python3 is unavailable.
-json_hook() { # json_hook FILE KIND CMD  (idempotent; refuses to clobber malformed JSON; atomic write)
-  local file="$1" kind="$2" cmd="$3"
+# to printing the snippet when python3 is unavailable. TIMEOUT_MS applies to gemini
+# entries only (Gemini hook timeouts are MILLISECONDS, default 60000 — the codegraph
+# bootstrap needs more headroom than that on a first run).
+json_hook() { # json_hook FILE KIND CMD [TIMEOUT_MS]  (idempotent; refuses to clobber malformed JSON; atomic write)
+  local file="$1" kind="$2" cmd="$3" timeout_ms="${4:-}"
   if [ "$DRYRUN" = 1 ]; then note "would register $kind SessionStart hook in $file"; return 0; fi
   if [ "$HAVE_PY" = 1 ]; then
     mkdir -p "$(dirname "$file")" 2>/dev/null
-    if CG_FILE="$file" CG_KIND="$kind" CG_CMD="$cmd" "$PY" - <<'PY'
+    if CG_FILE="$file" CG_KIND="$kind" CG_CMD="$cmd" CG_TIMEOUT_MS="$timeout_ms" "$PY" - <<'PY'
 import os, json, sys, tempfile
 f=os.environ["CG_FILE"]; kind=os.environ["CG_KIND"]; cmd=os.environ["CG_CMD"]
+timeout_ms=os.environ.get("CG_TIMEOUT_MS","")
 raw=open(f,encoding="utf-8").read() if os.path.exists(f) else ""
 data={}
 if raw.strip():
@@ -911,12 +1174,11 @@ if kind=="cursor":
 else:
     arr=data.setdefault("hooks", {}).setdefault("SessionStart", [])
     if not has(arr):
-        if kind=="antigravity":
-            arr.append({"command": cmd})
-        else:
-            entry={"hooks":[{"type":"command","command":cmd}]}
-            if kind=="gemini": entry["matcher"]="startup"
-            arr.append(entry)
+        hook={"type":"command","command":cmd}
+        if kind=="gemini" and timeout_ms: hook["timeout"]=int(timeout_ms)
+        entry={"hooks":[hook]}
+        if kind=="gemini": entry["matcher"]="startup"
+        arr.append(entry)
     if kind=="gemini":
         data.setdefault("hooksConfig", {})["enabled"]=True
 text=json.dumps(data, indent=2)+"\n"
@@ -1014,11 +1276,14 @@ codegraph_gitignore() { # codegraph_gitignore GITIGNORE_FILE
 
 selected() { case ",$AGENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 
-# Once-mode is the default. With --always, every wired hook command gets the flag so the
-# check stays verbose every session. The leading space lets us append it directly inside
-# the existing quoted command strings (empty => byte-identical to the default).
-HOOK_FLAGS=""
-[ "$ALWAYS" = 1 ] && HOOK_FLAGS=" --always"
+# Installed hooks bootstrap CodeGraph on first hit: install/register/index if missing,
+# then stay quiet once the repo is indexed. --no-bootstrap wires instruct-only hooks
+# (for restricted networks / users who want to run setup themselves). With --always,
+# every wired hook command also prints status each session. The leading space lets us
+# append flags directly inside the existing quoted command strings.
+HOOK_FLAGS=" --bootstrap"
+[ "$NOBOOTSTRAP" = 1 ] && HOOK_FLAGS=""
+[ "$ALWAYS" = 1 ] && HOOK_FLAGS="$HOOK_FLAGS --always"
 
 # Opt-in policy bundles (--with). Each is a HOOKLESS markdown policy distributed into the
 # same instruction channels as the core 3, via place_policy. Registry rows: id|src|marker|desc.
@@ -1050,7 +1315,7 @@ alwaysApply: true
       [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/$marker.md" < "$src"
       append_marked "$ANTI_INSTR" "$src" "$marker" ;;
     kimi)
-      if [ "$SCOPE" = "project" ]; then kdir="$ROOT/.kimi-code/skills/$marker/SKILL.md"; else kdir="$HOME/.kimi-code/skills/$marker/SKILL.md"; fi
+      if [ "$SCOPE" = "project" ]; then kdir="$ROOT/.kimi-code/skills/$marker/SKILL.md"; else kdir="$KIMI_HOME/skills/$marker/SKILL.md"; fi
       with_policy_frontmatter "---
 name: $marker
 description: $desc
@@ -1129,7 +1394,7 @@ if selected gemini; then
   append_marked "$GEMINI_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
   append_marked "$GEMINI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then GS="$ROOT/.gemini/settings.json"; else GS="$HOME/.gemini/settings.json"; fi
-  json_hook "$GS" gemini "bash \"$SCRIPT_OTHER\" --format json$HOOK_FLAGS"
+  json_hook "$GS" gemini "bash \"$SCRIPT_OTHER\" --format json$HOOK_FLAGS" 120000
   # Make Gemini also read AGENTS.md (so the shared policy applies).
   if [ "$HAVE_PY" = 1 ] && [ "$DRYRUN" = 0 ]; then
     if CG_FILE="$GS" "$PY" - <<'PY'
@@ -1191,46 +1456,48 @@ JS
 fi
 
 if selected antigravity; then
+  # Antigravity has NO session-start hook event (its hooks.json only fires around tool
+  # use / model invocations), so the rules + instruction files are the carrier here.
   [ -n "$ANTI_RULE" ] && putfile "$ANTI_RULE" < "$POLICY_SRC"       # project: .agents/rules/*.md
   append_marked "$ANTI_INSTR"                                       # global: ~/.gemini/GEMINI.md (shared)
   [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/karpathy-guidelines.md" < "$KARPATHY_SRC"
   append_marked "$ANTI_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
   [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/superpowers.md" < "$SUPERPOWERS_SRC"
   append_marked "$ANTI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
-  if [ "$SCOPE" = "project" ]; then AH="$ROOT/.agents/hooks.json"; else AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"; fi
-  json_hook "$AH" antigravity "bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"
 fi
 
 if selected kimi; then
-  if [ "$SCOPE" = "project" ]; then SKILL="$ROOT/.kimi-code/skills/codegraph-startup/SKILL.md"; else SKILL="$HOME/.kimi-code/skills/codegraph-startup/SKILL.md"; fi
+  if [ "$SCOPE" = "project" ]; then SKILL="$ROOT/.kimi-code/skills/codegraph-startup/SKILL.md"; else SKILL="$KIMI_HOME/skills/codegraph-startup/SKILL.md"; fi
   with_policy_frontmatter "---
 name: codegraph-startup
 description: At session start, verify CodeGraph is installed, indexed, and fresh before substantive work.
 whenToUse: At the very start of every session, before doing substantive work on a task.
 ---" | putfile "$SKILL"
-  if [ "$SCOPE" = "project" ]; then KSKILL="$ROOT/.kimi-code/skills/karpathy-guidelines/SKILL.md"; else KSKILL="$HOME/.kimi-code/skills/karpathy-guidelines/SKILL.md"; fi
+  if [ "$SCOPE" = "project" ]; then KSKILL="$ROOT/.kimi-code/skills/karpathy-guidelines/SKILL.md"; else KSKILL="$KIMI_HOME/skills/karpathy-guidelines/SKILL.md"; fi
   with_policy_frontmatter "---
 name: karpathy-guidelines
 description: Reduce common LLM coding mistakes — surface assumptions, keep it simple, make surgical changes, define verifiable success criteria.
 whenToUse: When writing, reviewing, or refactoring code on non-trivial tasks.
 ---" "$KARPATHY_SRC" | putfile "$KSKILL"
-  if [ "$SCOPE" = "project" ]; then SPSKILL="$ROOT/.kimi-code/skills/superpowers/SKILL.md"; else SPSKILL="$HOME/.kimi-code/skills/superpowers/SKILL.md"; fi
+  if [ "$SCOPE" = "project" ]; then SPSKILL="$ROOT/.kimi-code/skills/superpowers/SKILL.md"; else SPSKILL="$KIMI_HOME/skills/superpowers/SKILL.md"; fi
   with_policy_frontmatter "---
 name: superpowers
 description: Install the superpowers skills plugin and follow its TDD / systematic / simplicity / evidence methodology.
 whenToUse: At session start, and when planning or implementing non-trivial coding work.
 ---" "$SUPERPOWERS_SRC" | putfile "$SPSKILL"
-  # Kimi supports hooks ONLY in the global ~/.kimi-code/config.toml — so the hook is
-  # written on --global only. A --project install writes the skill and prints the snippet,
+  # Kimi supports hooks ONLY in the global config.toml — so the hook is written on
+  # --global only. A --project install writes the skill and prints the snippet,
   # never silently mutating your global config.
-  KCONF="$HOME/.kimi-code/config.toml"
+  KCONF="$KIMI_HOME/config.toml"
   KCMD="bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"   # quote the path so the shell command survives spaces in $HOME
   if [ "$SCOPE" = "global" ]; then
     if [ "$DRYRUN" = 1 ]; then note "would append Kimi SessionStart hook to $KCONF"
     elif grep -q "codegraph-session-check.sh" "$KCONF" 2>/dev/null; then note "Kimi SessionStart hook already in $KCONF"
     else
       mkdir -p "$(dirname "$KCONF")" 2>/dev/null
-      if printf '\n# codegraph-session-startup\n[[hooks]]\nevent = "SessionStart"\ncommand = "%s"\ntimeout = 10\n' "$(toml_esc "$KCMD")" >> "$KCONF"; then
+      # timeout 120, not 10: the first session in a new repo may install + index
+      # CodeGraph (the script's internal budgets keep the normal case far quicker).
+      if printf '\n# codegraph-session-startup\n[[hooks]]\nevent = "SessionStart"\ncommand = "%s"\ntimeout = 120\n' "$(toml_esc "$KCMD")" >> "$KCONF"; then
         note "appended Kimi SessionStart hook to $KCONF (global)"
       else FAILED=1; note "ERROR: failed to append Kimi hook to $KCONF"; fi
     fi
@@ -1348,7 +1615,7 @@ if policy_on primer; then
     selected gemini      && json_hook "$GS"    gemini      "$PRIMER_INVOKE brief --format json --nudge"
     selected cursor      && json_hook "$HFILE" cursor      "$PRIMER_INVOKE brief --format cursor --nudge"
     selected codex       && json_hook "$CFILE" codex       "$PRIMER_INVOKE brief --format text --nudge"
-    selected antigravity && json_hook "$AH"    antigravity "$PRIMER_INVOKE brief --format text --nudge"
+    # antigravity: no session-start hook event exists — the primer policy doc is its carrier.
     # opencode uses a .js plugin (not JSON hooks): emit the [Primer] brief on session.created.
     if selected opencode; then
       if [ "$SCOPE" = "project" ]; then PPLUG="$ROOT/.opencode/plugins/primer-session-check.js"; else PPLUG="$HOME/.config/opencode/plugins/primer-session-check.js"; fi
@@ -1367,7 +1634,7 @@ JS
     fi
     # kimi hooks are global-only: add a SECOND SessionStart [[hooks]] for the primer brief.
     if selected kimi && [ "$SCOPE" = "global" ]; then
-      KCONF="$HOME/.kimi-code/config.toml"; mkdir -p "$(dirname "$KCONF")" 2>/dev/null
+      KCONF="$KIMI_HOME/config.toml"; mkdir -p "$(dirname "$KCONF")" 2>/dev/null
       if grep -q "brief --format text" "$KCONF" 2>/dev/null; then note "Kimi primer brief already in $KCONF"
       elif printf '\n# primer brief\n[[hooks]]\nevent = "SessionStart"\ncommand = "%s"\ntimeout = 10\n' "$(toml_esc "$PRIMER_INVOKE brief --format text --nudge")" >> "$KCONF"; then note "appended Kimi primer brief to $KCONF (global)"
       else note "could not append Kimi primer brief to $KCONF"; fi
@@ -1379,7 +1646,7 @@ JS
       note "primer: Kimi hooks are global-only — the [Primer] brief + capture need --global (Kimi still gets the policy)."
     fi
     note "primer: wired ($SCOPE, via $PRIMER_KIND). RESTART your agent so the primer_* MCP tools load (the [Primer] brief works now)."
-    note "primer: brief -> claude/cursor/gemini/codex/antigravity/opencode (Kimi on --global; Qoder=policy). Edit-capture -> Claude + Kimi (--global); opencode capture is a follow-up."
+    note "primer: brief -> claude/cursor/gemini/codex/opencode (Kimi on --global; Antigravity/Qoder=policy). Edit-capture -> Claude + Kimi (--global); opencode capture is a follow-up."
   fi
 fi
 
@@ -1465,6 +1732,9 @@ for _a in $AGENTS; do case " $KNOWN_AGENTS " in *" $_a "*) ;; *) _bad="$_bad $_a
 IFS="$_oldifs"
 [ -n "$_bad" ] && { echo "error: unknown agent(s):$_bad" >&2; echo "known agents: $KNOWN_AGENTS" >&2; exit 2; }
 
+# Kimi Code's home is relocatable via KIMI_CODE_HOME (default ~/.kimi-code).
+KIMI_HOME="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
+
 # Scope-aware paths — MUST match install.sh exactly so we remove what it placed.
 if [ "$SCOPE" = "project" ]; then
   TARGET="${TARGET:-$PWD}"
@@ -1493,10 +1763,10 @@ else
   CURSOR_RULE_DIR=""
   SETTINGS="$HOME/.claude/settings.json"; CFILE="$HOME/.codex/hooks.json"
   HFILE="$HOME/.cursor/hooks.json"; GS="$HOME/.gemini/settings.json"
-  AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"
+  AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"   # legacy: older installs wired this (Antigravity has no session-start hook)
   OPENCODE_PLUG="$HOME/.config/opencode/plugins/codegraph-session-check.js"
-  KIMI_SKILLS="$HOME/.kimi-code/skills"
-  KCONF="$HOME/.kimi-code/config.toml"
+  KIMI_SKILLS="$KIMI_HOME/skills"
+  KCONF="$KIMI_HOME/config.toml"
 fi
 
 PY="$(command -v python3 || true)"
@@ -1732,6 +2002,8 @@ if selected opencode; then rm_path "$OPENCODE_PLUG"; rm_path "${OPENCODE_PLUG%/*
 if selected antigravity; then
   [ -n "$ANTI_RULE_DIR" ] && for n in $STANDALONE_NAMES; do rm_path "$ANTI_RULE_DIR/$n.md"; done
   strip_markers "$ANTI_INSTR"; unhook_json "$AH" antigravity
+  # Older installs created a (non-functional) global plugin dir wholly owned by us — remove it.
+  [ "$SCOPE" = "global" ] && rm_path "$HOME/.gemini/antigravity-cli/plugins/agent-primer"
 fi
 if selected kimi; then
   for n in $KIMI_SKILL_NAMES; do rm_path "$KIMI_SKILLS/$n"; done
