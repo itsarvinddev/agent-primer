@@ -19,6 +19,17 @@ export interface ToolDef {
   inputSchema: Record<string, unknown>;
 }
 
+// Every tool accepts an optional projectPath: MCP hosts may launch this server with a
+// cwd OUTSIDE the project (the cwd of stdio servers is not specified by most hosts),
+// which would silently resolve the wrong .primer/ DB. projectPath pins resolution to
+// the real workspace root — same recovery contract CodeGraph uses.
+const PROJECT_PATH_PROP = {
+  projectPath: {
+    type: 'string',
+    description: 'absolute project root — pass when the MCP server may have been launched outside the project',
+  },
+} as const;
+
 export const TOOLS: ToolDef[] = [
   {
     name: 'primer_apply',
@@ -31,6 +42,7 @@ export const TOOLS: ToolDef[] = [
         language: { type: 'string', description: 'language scope, e.g. typescript' },
         category: { type: 'string', enum: [...CATEGORIES] },
         limit: { type: 'number', description: 'max preferences (default 24)' },
+        ...PROJECT_PATH_PROP,
       },
     },
   },
@@ -51,6 +63,7 @@ export const TOOLS: ToolDef[] = [
         signalIds: { type: 'array', items: { type: 'number' }, description: 'signal ids this preference came from' },
         supersedes: { type: 'number', description: 'preference id to forget + supersede' },
         force: { type: 'boolean', description: 'bypass the near-duplicate gate' },
+        ...PROJECT_PATH_PROP,
       },
     },
   },
@@ -64,6 +77,7 @@ export const TOOLS: ToolDef[] = [
         text: { type: 'string' },
         category: { type: 'string', enum: [...CATEGORIES] },
         limit: { type: 'number' },
+        ...PROJECT_PATH_PROP,
       },
     },
   },
@@ -72,13 +86,13 @@ export const TOOLS: ToolDef[] = [
     description: 'Get a bounded digest of recent edit-signals to distill into durable preferences (then call primer_record).',
     inputSchema: {
       type: 'object',
-      properties: { limit: { type: 'number', description: 'max signals (default/cap 30)' } },
+      properties: { limit: { type: 'number', description: 'max signals (default/cap 30)' }, ...PROJECT_PATH_PROP },
     },
   },
   {
     name: 'primer_status',
     description: 'Style-graph health: preference + pending-signal counts.',
-    inputSchema: { type: 'object', properties: {} },
+    inputSchema: { type: 'object', properties: { ...PROJECT_PATH_PROP } },
   },
   {
     name: 'primer_impact',
@@ -90,13 +104,18 @@ export const TOOLS: ToolDef[] = [
         preference: { type: 'number', description: 'preference id to analyze' },
         file: { type: 'string', description: 'file path (read from disk if code omitted)' },
         code: { type: 'string', description: 'source to analyze (pass file for the language)' },
+        ...PROJECT_PATH_PROP,
       },
     },
   },
 ];
 
-function withWriteDb<T>(fn: (db: DatabaseSync) => T): T {
-  const { path } = resolveDbPath({});
+function projectCwd(args: Record<string, any>): string | undefined {
+  return typeof args.projectPath === 'string' && args.projectPath ? args.projectPath : undefined;
+}
+
+function withWriteDb<T>(cwd: string | undefined, fn: (db: DatabaseSync) => T): T {
+  const { path } = resolveDbPath({ cwd });
   const db = connect(path, { create: true });
   try {
     return fn(db);
@@ -105,8 +124,8 @@ function withWriteDb<T>(fn: (db: DatabaseSync) => T): T {
   }
 }
 
-function withReadDbs<T>(fn: (dbs: DatabaseSync[]) => T): T {
-  const opened = readableDbPaths({}).map((r) => connect(r.path, { create: false }));
+function withReadDbs<T>(cwd: string | undefined, fn: (dbs: DatabaseSync[]) => T): T {
+  const opened = readableDbPaths({ cwd }).map((r) => connect(r.path, { create: false }));
   try {
     return fn(opened);
   } finally {
@@ -118,17 +137,23 @@ function text(s: string): { content: Array<{ type: 'text'; text: string }> } {
   return { content: [{ type: 'text', text: s }] };
 }
 
+const NO_DB_HINT =
+  'No primer style DB found from this working directory. If one exists for your project, retry with projectPath: "<absolute project root>" (MCP hosts sometimes launch this server outside the project). Otherwise this is a fresh memory: record durable preferences with primer_record as the user expresses them.';
+
 export async function dispatch(name: string, args: Record<string, any>): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+  const cwd = projectCwd(args);
   try {
     switch (name) {
       case 'primer_apply': {
-        const items = withReadDbs((dbs) =>
-          buildBrief(dbs, { context: args.context, language: args.language, category: args.category, limit: args.limit }),
-        );
+        const { found, items } = withReadDbs(cwd, (dbs) => ({
+          found: dbs.length > 0,
+          items: buildBrief(dbs, { context: args.context, language: args.language, category: args.category, limit: args.limit }),
+        }));
+        if (!found) return text(NO_DB_HINT);
         return text(items.length ? briefToText(items) : 'No recorded preferences yet. Record durable ones with primer_record as the user corrects you.');
       }
       case 'primer_record': {
-        const r = withWriteDb((db) =>
+        const r = withWriteDb(cwd, (db) =>
           recordPreference(db, {
             category: args.category,
             statement: args.statement,
@@ -145,27 +170,29 @@ export async function dispatch(name: string, args: Record<string, any>): Promise
         return text(JSON.stringify({ status: r.status, message: r.message, preference: r.preference, similar: r.similar }, null, 2));
       }
       case 'primer_query': {
-        const rows = withReadDbs((dbs) => dbs.flatMap((db) => queryPreferences(db, { text: args.text, category: args.category, limit: args.limit })));
+        const rows = withReadDbs(cwd, (dbs) => dbs.flatMap((db) => queryPreferences(db, { text: args.text, category: args.category, limit: args.limit })));
         return text(JSON.stringify(rows, null, 2));
       }
       case 'primer_learn': {
         // buildDigest does all DB work before its first await, so the sync withWriteDb
         // closes the connection safely; the tree-sitter work that follows needs no DB.
-        const digest = await withWriteDb((db) => buildDigest(db, { limit: args.limit, consume: true }));
+        const digest = await withWriteDb(cwd, (db) => buildDigest(db, { limit: args.limit, consume: true }));
         return text(JSON.stringify(digest, null, 2));
       }
       case 'primer_status': {
-        const status = withReadDbs((dbs) =>
+        const status = withReadDbs(cwd, (dbs) =>
           dbs.map((db) => ({
             preferences: (db.prepare("SELECT COUNT(*) AS n FROM preferences WHERE status='active'").get() as any).n,
             pending_signals: pendingCount(db),
           })),
         );
-        return text(JSON.stringify({ initialized: status.length > 0, scopes: status }, null, 2));
+        const out: Record<string, unknown> = { initialized: status.length > 0, scopes: status };
+        if (!status.length) out.hint = NO_DB_HINT;
+        return text(JSON.stringify(out, null, 2));
       }
       case 'primer_impact': {
         if (args.preference != null) {
-          const res = withReadDbs((dbs) => (dbs.length ? preferenceImpact(dbs[0], Number(args.preference)) : null));
+          const res = withReadDbs(cwd, (dbs) => (dbs.length ? preferenceImpact(dbs[0], Number(args.preference)) : null));
           return text(res ? JSON.stringify(res, null, 2) : 'no primer DB yet');
         }
         if (args.file || args.code) {
@@ -178,7 +205,7 @@ export async function dispatch(name: string, args: Record<string, any>): Promise
               return { ...text(`cannot read ${args.file}`), isError: true };
             }
           }
-          const res = await withReadDbs((dbs) => fileImpact(dbs, filePath, code ?? ''));
+          const res = await withReadDbs(cwd, (dbs) => fileImpact(dbs, filePath, code ?? ''));
           return text(JSON.stringify(res, null, 2));
         }
         return { ...text('primer_impact needs {preference} or {file|code}'), isError: true };

@@ -17,4 +17,7 @@ When to call each tool:
 - primer_query / primer_status — search the style memory / check its health.
 
 Distillation spends the USER's tokens (primer has no model of its own), so keep primer_learn bounded
-and don't over-record near-duplicates.`;
+and don't over-record near-duplicates.
+
+If results look empty or wrong for the project you're in, the MCP host may have launched this server
+outside the project: retry the call with projectPath: "<absolute project root>".`;

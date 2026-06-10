@@ -29,23 +29,50 @@ chk "trailing --format hook does not hang" 'guard bash "$ROOT/codegraph-session-
 echo "== once-mode hook (default) + --always opt-out =="
 # A real index = the .codegraph/ dir AND a SQLite db inside it (an aborted init leaves a bare dir).
 OM="$(mk)"; mkdir -p "$OM/.codegraph"; : > "$OM/.codegraph/codegraph.db"
+NO_CG_PATH="$(mk)/nobin"; mkdir -p "$NO_CG_PATH"
+for t in bash sed grep find mkdir rm; do p="$(command -v "$t" 2>/dev/null)"; [ -n "$p" ] && ln -sf "$p" "$NO_CG_PATH/$t"; done
+# Hermetic runner: bare PATH (no codegraph, no sh/curl), no PATH augmentation, fresh HOME.
+nocg() { guard env -i PATH="$NO_CG_PATH" HOME="$1" AGENT_PRIMER_NO_PATH_AUGMENT=1 PWD="$ROOT" bash "$ROOT/codegraph-session-check.sh" --format text "${@:2}" 2>/dev/null; }
+GITP="$(mk)"; mkdir "$GITP/.git"   # a dir the bootstrap guard treats as a real project
+chk "missing CLI: hard-stops before task work"   'nocg "$(mk)" --project "$(mk)" | grep -F "STOP: do not inspect files" >/dev/null'
+chk "missing CLI: uses exact install URL"        'nocg "$(mk)" --project "$(mk)" | grep -F "https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh" >/dev/null'
+chk "missing CLI: non-interactive register (-y)" 'nocg "$(mk)" --project "$(mk)" | grep -F "codegraph install -y" >/dev/null'
+chk "missing CLI: forbids after-task note"       'nocg "$(mk)" --project "$(mk)" | grep -F "Never append this as an after-the-fact note" >/dev/null'
+chk "missing CLI bootstrap: fails into commands" 'nocg "$(mk)" --project "$GITP" --bootstrap | grep -F "[CodeGraph bootstrap failed]" >/dev/null'
+chk "missing CLI bootstrap: non-git dir soft-notes, no STOP" 'OUT="$(nocg "$(mk)" --project "$(mk)" --bootstrap)"; printf "%s" "$OUT" | grep -F "[CodeGraph not set up here]" >/dev/null && ! printf "%s" "$OUT" | grep -F "STOP:" >/dev/null'
+BHOME="$(mk)"; mkdir -p "$BHOME/.agent-primer"; : > "$BHOME/.agent-primer/codegraph-install.last-attempt"
+chk "missing CLI bootstrap: recent attempt backs off to instructions" 'nocg "$BHOME" --project "$GITP" --bootstrap | grep -F "[CodeGraph setup required before task work]" >/dev/null'
 if command -v codegraph >/dev/null 2>&1; then
   chk "once-mode: silent when project is set up"  '[ -z "$(guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM" 2>/dev/null)" ]'
   chk "--always: prints index-present block"      'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM" --always 2>/dev/null | grep -q "Index present"'
   OMH="$(mk)"; mkdir -p "$OMH/.codegraph"   # dir present but NO index db = half-built init
   chk "half-built .codegraph (no db) nudges init" 'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OMH" 2>/dev/null | grep -q "codegraph init -i"'
   OM2="$(mk)"
-  chk "not set up: still nudges codegraph init"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -q "codegraph init -i"'
-  chk "not set up: asks through prompt dialog"    'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "prompt/confirmation dialog" >/dev/null && guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "Want me to run" >/dev/null'
+  chk "not set up: requires codegraph init"       'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -q "codegraph init -i"'
+  chk "not set up: hard-stops before task work"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "STOP: do not inspect files" >/dev/null'
+  chk "not set up: uses command approval"         'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "command approval" >/dev/null && ! guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "Want me" >/dev/null'
+  chk "not set up: forbids after-task note"       'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OM2" 2>/dev/null | grep -F "Never append this as an after-the-fact note" >/dev/null'
+  OMB="$(mk)"; ( cd "$OMB" && git init -q ) 2>/dev/null
+  OMB_OUT="$(guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OMB" --bootstrap 2>/dev/null)"
+  chk "bootstrap: indexes missing git project"    'printf "%s" "$OMB_OUT" | grep -F "[CodeGraph bootstrap complete]" >/dev/null && [ -d "$OMB/.codegraph" ]'
+  chk "bootstrap: gitignores the new index"       'grep -qE "^/?\.codegraph/?\$" "$OMB/.gitignore"'
+  chk "bootstrap: emits MCP projectPath recovery hint" 'printf "%s" "$OMB_OUT" | grep -F "No CodeGraph project is loaded" >/dev/null'
+  OMN="$(mk)"
+  chk "bootstrap: refuses to index non-git dir"   'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OMN" --bootstrap 2>/dev/null | grep -F "[CodeGraph not set up here]" >/dev/null && [ ! -d "$OMN/.codegraph" ]'
+  OMP="$(mk)"; mkdir -p "$OMP/.git" "$OMP/.codegraph"   # fresh bare index dir = an indexer is in flight
+  chk "bootstrap: defers to an in-flight indexer" 'guard bash "$ROOT/codegraph-session-check.sh" --format text --project "$OMP" --bootstrap 2>/dev/null | grep -F "already appears to be in progress" >/dev/null'
 else
   echo "  skip branch-2/3 hook tests (no codegraph CLI on PATH)"
 fi
 chk "trailing --always does not hang"             'guard bash "$ROOT/codegraph-session-check.sh" --project "$OM" --always >/dev/null 2>&1; [ $? -ne 142 ]'
+chk "policy no longer says auto-init"             '! grep -F "may initialize/sync automatically" "$ROOT/codegraph-policy.md" >/dev/null'
 
 echo "== install threads --always into hook commands =="
 APD="$(mk)"; guard bash "$INSTALL" --project "$APD" >/dev/null 2>&1
 chk "default install: no --always (claude)"       '! grep -q -- "--always" "$APD/.claude/settings.json"'
 chk "default install: no --always (opencode)"     '! grep -q -- "--always" "$APD/.opencode/plugins/codegraph-session-check.js"'
+chk "default install: bootstraps (claude)"        'grep -q -- "--bootstrap" "$APD/.claude/settings.json"'
+chk "default install: bootstraps (codex)"         'grep -q -- "--bootstrap" "$APD/.codex/hooks.json"'
 APA="$(mk)"; guard bash "$INSTALL" --project "$APA" --always >/dev/null 2>&1
 chk "--always: flag in claude settings"           'grep -q -- "--always" "$APA/.claude/settings.json"'
 chk "--always: flag in codex hooks"               'grep -q -- "--always" "$APA/.codex/hooks.json"'
@@ -53,8 +80,12 @@ chk "--always: flag in gemini settings"           'grep -q -- "--always" "$APA/.
 chk "--always: flag in cursor hooks"              'grep -q -- "--always" "$APA/.cursor/hooks.json"'
 chk "--always: flag in opencode plugin"           'grep -q -- "--always" "$APA/.opencode/plugins/codegraph-session-check.js"'
 chk "--always: claude settings still valid JSON"  'vjson "$APA/.claude/settings.json"'
-HKA="$(mk)"; guard env HOME="$HKA" bash "$INSTALL" --global --always --agents kimi >/dev/null 2>&1
+ANB="$(mk)"; guard bash "$INSTALL" --project "$ANB" --no-bootstrap >/dev/null 2>&1
+chk "--no-bootstrap: claude hook instructs only"  '! grep -q -- "--bootstrap" "$ANB/.claude/settings.json"'
+chk "--no-bootstrap: opencode plugin instructs only" '! grep -q -- "--bootstrap" "$ANB/.opencode/plugins/codegraph-session-check.js"'
+HKA="$(mk)"; guard env HOME="$HKA" KIMI_CODE_HOME= bash "$INSTALL" --global --always --agents kimi >/dev/null 2>&1
 chk "--always: flag in kimi config.toml (global)" 'grep -q -- "--always" "$HKA/.kimi-code/config.toml"'
+chk "kimi codegraph hook: 120s timeout (bootstrap headroom)" 'grep -q "timeout = 120" "$HKA/.kimi-code/config.toml"'
 
 echo "== --with opt-in bundles =="
 WD="$(mk)"; guard bash "$INSTALL" --project "$WD" >/dev/null 2>&1
@@ -66,7 +97,7 @@ chk "--with rules: marker present"                'has_block "$WM/AGENTS.md" age
 chk "--with mcp,rules: tools NOT present"         '! has_block "$WM/AGENTS.md" agent-primer-tools'
 chk "--with: core 3 still present"                'has_block "$WM/AGENTS.md" karpathy-guidelines'
 chk "--with: claude settings still valid JSON"    'vjson "$WM/.claude/settings.json"'
-WK="$(mk)"; guard env HOME="$WK" bash "$INSTALL" --global --with mcp --agents kimi >/dev/null 2>&1
+WK="$(mk)"; guard env HOME="$WK" KIMI_CODE_HOME= bash "$INSTALL" --global --with mcp --agents kimi >/dev/null 2>&1
 chk "--with mcp: kimi skill dir created (global)" '[ -d "$WK/.kimi-code/skills/agent-primer-mcp" ]'
 WA="$(mk)"; guard bash "$INSTALL" --project "$WA" --with all >/dev/null 2>&1
 chk "--with all: 8 marker blocks"                 '[ "$(grep -c ":start -->" "$WA/AGENTS.md")" = "8" ]'
@@ -115,7 +146,10 @@ done
 chk "claude settings.json valid JSON"     'vjson "$P/.claude/settings.json"'
 chk "codex hooks.json valid JSON"         'vjson "$P/.codex/hooks.json"'
 chk "gemini settings.json valid JSON"     'vjson "$P/.gemini/settings.json"'
+chk "gemini hook timeout raised (ms)"     'grep -q 120000 "$P/.gemini/settings.json"'
 chk "opencode plugin written"             '[ -f "$P/.opencode/plugins/codegraph-session-check.js" ]'
+chk "opencode plugin bootstraps"          'grep -q -- "--bootstrap" "$P/.opencode/plugins/codegraph-session-check.js"'
+chk "antigravity: no dead hooks.json"     '[ ! -f "$P/.agents/hooks.json" ]'
 chk "kit placed under tools/agent-primer" '[ -f "$P/tools/agent-primer/codegraph-session-check.sh" ]'
 chk "project install gitignores .codegraph/" 'grep -qE "^/?\.codegraph/?\$" "$P/.gitignore"'
 
@@ -152,11 +186,11 @@ chk "gemini: surviving GEMINI.md ref kept"       'grep -q "GEMINI.md" "$GK/.gemi
 chk "gemini: dangling AGENTS.md ref still pruned" '! grep -q "AGENTS.md" "$GK/.gemini/settings.json" 2>/dev/null'
 
 echo "== global install + uninstall (isolated HOME) =="
-H="$(mk)"; guard env HOME="$H" bash "$INSTALL" --global >/dev/null 2>&1
+H="$(mk)"; guard env HOME="$H" KIMI_CODE_HOME= bash "$INSTALL" --global >/dev/null 2>&1
 chk "agent-primer kit dir created"         '[ -f "$H/.agent-primer/codegraph-session-check.sh" ]'
 chk "global CLAUDE.md has 3 blocks"        'has_block "$H/.claude/CLAUDE.md" codegraph-session-startup && has_block "$H/.claude/CLAUDE.md" karpathy-guidelines && has_block "$H/.claude/CLAUDE.md" superpowers'
 chk "kimi config.toml has hook"            'grep -q codegraph-session-check.sh "$H/.kimi-code/config.toml"'
-guard env HOME="$H" bash "$UNINSTALL" --global >/dev/null 2>&1
+guard env HOME="$H" KIMI_CODE_HOME= bash "$UNINSTALL" --global >/dev/null 2>&1
 chk "global uninstall removed kit dir"     '[ ! -d "$H/.agent-primer" ]'
 chk "global CLAUDE.md block-free"          '! has_block "$H/.claude/CLAUDE.md" superpowers'
 chk "kimi hook removed"                    '! grep -q codegraph-session-check.sh "$H/.kimi-code/config.toml" 2>/dev/null'

@@ -44,6 +44,7 @@ KNOWN_BUNDLES="mcp tools rules skills agent-extensions"
 KNOWN_SOLO="primer"               # opt-in (needs Node); NEVER part of `--with all`
 DRYRUN=0
 ALWAYS=0   # 1 => thread --always into every wired hook command (legacy every-session mode)
+NOBOOTSTRAP=0  # 1 => wire instruct-only hooks (no auto install/index at session start)
 FAILED=0   # set to 1 by any failed write/merge; controls the final exit code
 
 usage() {
@@ -57,6 +58,7 @@ Usage:
   install.sh ... --agents a,b    only these agents (comma-separated; default: all)
   install.sh ... --dry-run       show what would happen, write nothing
   install.sh ... --always        wire every-session hooks (default: once per project — quiet after setup)
+  install.sh ... --no-bootstrap  hooks only instruct (never auto install/index at session start)
   install.sh ... --with a,b      also install opt-in bundles: mcp, tools, rules, skills, agent-extensions (or 'all')
   install.sh ... --with primer   wire the local coding-style engine (Node>=22.13; not in 'all')
   install.sh --version           print version and exit
@@ -76,6 +78,7 @@ while [ "$#" -gt 0 ]; do
     --agents=*) AGENTS="${1#*=}"; shift ;;
     --dry-run) DRYRUN=1; shift ;;
     --always) ALWAYS=1; shift ;;
+    --no-bootstrap) NOBOOTSTRAP=1; shift ;;
     --with) WITH="${2:-}"; shift; [ "$#" -gt 0 ] && shift ;;
     --with=*) WITH="${1#*=}"; shift ;;
     --version) echo "agent-primer $VERSION"; exit 0 ;;
@@ -156,6 +159,9 @@ fi
 PY="$(command -v python3 || true)"
 HAVE_PY=0; [ -n "$PY" ] && HAVE_PY=1
 
+# Kimi Code's home is relocatable via KIMI_CODE_HOME (default ~/.kimi-code).
+KIMI_HOME="${KIMI_CODE_HOME:-$HOME/.kimi-code}"
+
 note() { printf '[agent-primer] %s\n' "$*"; }
 
 # JSON-encode a string to a safe double-quoted literal (for embedding a path into
@@ -220,15 +226,18 @@ PY
 }
 
 # Merge a session-start command hook into a JSON config (idempotent). Falls back
-# to printing the snippet when python3 is unavailable.
-json_hook() { # json_hook FILE KIND CMD  (idempotent; refuses to clobber malformed JSON; atomic write)
-  local file="$1" kind="$2" cmd="$3"
+# to printing the snippet when python3 is unavailable. TIMEOUT_MS applies to gemini
+# entries only (Gemini hook timeouts are MILLISECONDS, default 60000 — the codegraph
+# bootstrap needs more headroom than that on a first run).
+json_hook() { # json_hook FILE KIND CMD [TIMEOUT_MS]  (idempotent; refuses to clobber malformed JSON; atomic write)
+  local file="$1" kind="$2" cmd="$3" timeout_ms="${4:-}"
   if [ "$DRYRUN" = 1 ]; then note "would register $kind SessionStart hook in $file"; return 0; fi
   if [ "$HAVE_PY" = 1 ]; then
     mkdir -p "$(dirname "$file")" 2>/dev/null
-    if CG_FILE="$file" CG_KIND="$kind" CG_CMD="$cmd" "$PY" - <<'PY'
+    if CG_FILE="$file" CG_KIND="$kind" CG_CMD="$cmd" CG_TIMEOUT_MS="$timeout_ms" "$PY" - <<'PY'
 import os, json, sys, tempfile
 f=os.environ["CG_FILE"]; kind=os.environ["CG_KIND"]; cmd=os.environ["CG_CMD"]
+timeout_ms=os.environ.get("CG_TIMEOUT_MS","")
 raw=open(f,encoding="utf-8").read() if os.path.exists(f) else ""
 data={}
 if raw.strip():
@@ -255,12 +264,11 @@ if kind=="cursor":
 else:
     arr=data.setdefault("hooks", {}).setdefault("SessionStart", [])
     if not has(arr):
-        if kind=="antigravity":
-            arr.append({"command": cmd})
-        else:
-            entry={"hooks":[{"type":"command","command":cmd}]}
-            if kind=="gemini": entry["matcher"]="startup"
-            arr.append(entry)
+        hook={"type":"command","command":cmd}
+        if kind=="gemini" and timeout_ms: hook["timeout"]=int(timeout_ms)
+        entry={"hooks":[hook]}
+        if kind=="gemini": entry["matcher"]="startup"
+        arr.append(entry)
     if kind=="gemini":
         data.setdefault("hooksConfig", {})["enabled"]=True
 text=json.dumps(data, indent=2)+"\n"
@@ -358,11 +366,14 @@ codegraph_gitignore() { # codegraph_gitignore GITIGNORE_FILE
 
 selected() { case ",$AGENTS," in *",$1,"*) return 0 ;; *) return 1 ;; esac }
 
-# Once-mode is the default. With --always, every wired hook command gets the flag so the
-# check stays verbose every session. The leading space lets us append it directly inside
-# the existing quoted command strings (empty => byte-identical to the default).
-HOOK_FLAGS=""
-[ "$ALWAYS" = 1 ] && HOOK_FLAGS=" --always"
+# Installed hooks bootstrap CodeGraph on first hit: install/register/index if missing,
+# then stay quiet once the repo is indexed. --no-bootstrap wires instruct-only hooks
+# (for restricted networks / users who want to run setup themselves). With --always,
+# every wired hook command also prints status each session. The leading space lets us
+# append flags directly inside the existing quoted command strings.
+HOOK_FLAGS=" --bootstrap"
+[ "$NOBOOTSTRAP" = 1 ] && HOOK_FLAGS=""
+[ "$ALWAYS" = 1 ] && HOOK_FLAGS="$HOOK_FLAGS --always"
 
 # Opt-in policy bundles (--with). Each is a HOOKLESS markdown policy distributed into the
 # same instruction channels as the core 3, via place_policy. Registry rows: id|src|marker|desc.
@@ -394,7 +405,7 @@ alwaysApply: true
       [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/$marker.md" < "$src"
       append_marked "$ANTI_INSTR" "$src" "$marker" ;;
     kimi)
-      if [ "$SCOPE" = "project" ]; then kdir="$ROOT/.kimi-code/skills/$marker/SKILL.md"; else kdir="$HOME/.kimi-code/skills/$marker/SKILL.md"; fi
+      if [ "$SCOPE" = "project" ]; then kdir="$ROOT/.kimi-code/skills/$marker/SKILL.md"; else kdir="$KIMI_HOME/skills/$marker/SKILL.md"; fi
       with_policy_frontmatter "---
 name: $marker
 description: $desc
@@ -473,7 +484,7 @@ if selected gemini; then
   append_marked "$GEMINI_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
   append_marked "$GEMINI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
   if [ "$SCOPE" = "project" ]; then GS="$ROOT/.gemini/settings.json"; else GS="$HOME/.gemini/settings.json"; fi
-  json_hook "$GS" gemini "bash \"$SCRIPT_OTHER\" --format json$HOOK_FLAGS"
+  json_hook "$GS" gemini "bash \"$SCRIPT_OTHER\" --format json$HOOK_FLAGS" 120000
   # Make Gemini also read AGENTS.md (so the shared policy applies).
   if [ "$HAVE_PY" = 1 ] && [ "$DRYRUN" = 0 ]; then
     if CG_FILE="$GS" "$PY" - <<'PY'
@@ -535,46 +546,48 @@ JS
 fi
 
 if selected antigravity; then
+  # Antigravity has NO session-start hook event (its hooks.json only fires around tool
+  # use / model invocations), so the rules + instruction files are the carrier here.
   [ -n "$ANTI_RULE" ] && putfile "$ANTI_RULE" < "$POLICY_SRC"       # project: .agents/rules/*.md
   append_marked "$ANTI_INSTR"                                       # global: ~/.gemini/GEMINI.md (shared)
   [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/karpathy-guidelines.md" < "$KARPATHY_SRC"
   append_marked "$ANTI_INSTR" "$KARPATHY_SRC" "karpathy-guidelines"
   [ -n "$ANTI_RULE" ] && putfile "${ANTI_RULE%/*}/superpowers.md" < "$SUPERPOWERS_SRC"
   append_marked "$ANTI_INSTR" "$SUPERPOWERS_SRC" "superpowers"
-  if [ "$SCOPE" = "project" ]; then AH="$ROOT/.agents/hooks.json"; else AH="$HOME/.gemini/antigravity-cli/plugins/agent-primer/hooks.json"; fi
-  json_hook "$AH" antigravity "bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"
 fi
 
 if selected kimi; then
-  if [ "$SCOPE" = "project" ]; then SKILL="$ROOT/.kimi-code/skills/codegraph-startup/SKILL.md"; else SKILL="$HOME/.kimi-code/skills/codegraph-startup/SKILL.md"; fi
+  if [ "$SCOPE" = "project" ]; then SKILL="$ROOT/.kimi-code/skills/codegraph-startup/SKILL.md"; else SKILL="$KIMI_HOME/skills/codegraph-startup/SKILL.md"; fi
   with_policy_frontmatter "---
 name: codegraph-startup
 description: At session start, verify CodeGraph is installed, indexed, and fresh before substantive work.
 whenToUse: At the very start of every session, before doing substantive work on a task.
 ---" | putfile "$SKILL"
-  if [ "$SCOPE" = "project" ]; then KSKILL="$ROOT/.kimi-code/skills/karpathy-guidelines/SKILL.md"; else KSKILL="$HOME/.kimi-code/skills/karpathy-guidelines/SKILL.md"; fi
+  if [ "$SCOPE" = "project" ]; then KSKILL="$ROOT/.kimi-code/skills/karpathy-guidelines/SKILL.md"; else KSKILL="$KIMI_HOME/skills/karpathy-guidelines/SKILL.md"; fi
   with_policy_frontmatter "---
 name: karpathy-guidelines
 description: Reduce common LLM coding mistakes — surface assumptions, keep it simple, make surgical changes, define verifiable success criteria.
 whenToUse: When writing, reviewing, or refactoring code on non-trivial tasks.
 ---" "$KARPATHY_SRC" | putfile "$KSKILL"
-  if [ "$SCOPE" = "project" ]; then SPSKILL="$ROOT/.kimi-code/skills/superpowers/SKILL.md"; else SPSKILL="$HOME/.kimi-code/skills/superpowers/SKILL.md"; fi
+  if [ "$SCOPE" = "project" ]; then SPSKILL="$ROOT/.kimi-code/skills/superpowers/SKILL.md"; else SPSKILL="$KIMI_HOME/skills/superpowers/SKILL.md"; fi
   with_policy_frontmatter "---
 name: superpowers
 description: Install the superpowers skills plugin and follow its TDD / systematic / simplicity / evidence methodology.
 whenToUse: At session start, and when planning or implementing non-trivial coding work.
 ---" "$SUPERPOWERS_SRC" | putfile "$SPSKILL"
-  # Kimi supports hooks ONLY in the global ~/.kimi-code/config.toml — so the hook is
-  # written on --global only. A --project install writes the skill and prints the snippet,
+  # Kimi supports hooks ONLY in the global config.toml — so the hook is written on
+  # --global only. A --project install writes the skill and prints the snippet,
   # never silently mutating your global config.
-  KCONF="$HOME/.kimi-code/config.toml"
+  KCONF="$KIMI_HOME/config.toml"
   KCMD="bash \"$SCRIPT_OTHER\" --format text$HOOK_FLAGS"   # quote the path so the shell command survives spaces in $HOME
   if [ "$SCOPE" = "global" ]; then
     if [ "$DRYRUN" = 1 ]; then note "would append Kimi SessionStart hook to $KCONF"
     elif grep -q "codegraph-session-check.sh" "$KCONF" 2>/dev/null; then note "Kimi SessionStart hook already in $KCONF"
     else
       mkdir -p "$(dirname "$KCONF")" 2>/dev/null
-      if printf '\n# codegraph-session-startup\n[[hooks]]\nevent = "SessionStart"\ncommand = "%s"\ntimeout = 10\n' "$(toml_esc "$KCMD")" >> "$KCONF"; then
+      # timeout 120, not 10: the first session in a new repo may install + index
+      # CodeGraph (the script's internal budgets keep the normal case far quicker).
+      if printf '\n# codegraph-session-startup\n[[hooks]]\nevent = "SessionStart"\ncommand = "%s"\ntimeout = 120\n' "$(toml_esc "$KCMD")" >> "$KCONF"; then
         note "appended Kimi SessionStart hook to $KCONF (global)"
       else FAILED=1; note "ERROR: failed to append Kimi hook to $KCONF"; fi
     fi
@@ -692,7 +705,7 @@ if policy_on primer; then
     selected gemini      && json_hook "$GS"    gemini      "$PRIMER_INVOKE brief --format json --nudge"
     selected cursor      && json_hook "$HFILE" cursor      "$PRIMER_INVOKE brief --format cursor --nudge"
     selected codex       && json_hook "$CFILE" codex       "$PRIMER_INVOKE brief --format text --nudge"
-    selected antigravity && json_hook "$AH"    antigravity "$PRIMER_INVOKE brief --format text --nudge"
+    # antigravity: no session-start hook event exists — the primer policy doc is its carrier.
     # opencode uses a .js plugin (not JSON hooks): emit the [Primer] brief on session.created.
     if selected opencode; then
       if [ "$SCOPE" = "project" ]; then PPLUG="$ROOT/.opencode/plugins/primer-session-check.js"; else PPLUG="$HOME/.config/opencode/plugins/primer-session-check.js"; fi
@@ -711,7 +724,7 @@ JS
     fi
     # kimi hooks are global-only: add a SECOND SessionStart [[hooks]] for the primer brief.
     if selected kimi && [ "$SCOPE" = "global" ]; then
-      KCONF="$HOME/.kimi-code/config.toml"; mkdir -p "$(dirname "$KCONF")" 2>/dev/null
+      KCONF="$KIMI_HOME/config.toml"; mkdir -p "$(dirname "$KCONF")" 2>/dev/null
       if grep -q "brief --format text" "$KCONF" 2>/dev/null; then note "Kimi primer brief already in $KCONF"
       elif printf '\n# primer brief\n[[hooks]]\nevent = "SessionStart"\ncommand = "%s"\ntimeout = 10\n' "$(toml_esc "$PRIMER_INVOKE brief --format text --nudge")" >> "$KCONF"; then note "appended Kimi primer brief to $KCONF (global)"
       else note "could not append Kimi primer brief to $KCONF"; fi
@@ -723,7 +736,7 @@ JS
       note "primer: Kimi hooks are global-only — the [Primer] brief + capture need --global (Kimi still gets the policy)."
     fi
     note "primer: wired ($SCOPE, via $PRIMER_KIND). RESTART your agent so the primer_* MCP tools load (the [Primer] brief works now)."
-    note "primer: brief -> claude/cursor/gemini/codex/antigravity/opencode (Kimi on --global; Qoder=policy). Edit-capture -> Claude + Kimi (--global); opencode capture is a follow-up."
+    note "primer: brief -> claude/cursor/gemini/codex/opencode (Kimi on --global; Antigravity/Qoder=policy). Edit-capture -> Claude + Kimi (--global); opencode capture is a follow-up."
   fi
 fi
 

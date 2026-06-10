@@ -1,12 +1,14 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
@@ -94,6 +96,7 @@ interface Parsed {
   bundles: Set<Bundle>;
   dryRun: boolean;
   always: boolean;
+  noBootstrap: boolean;
   purge: boolean;
 }
 
@@ -184,6 +187,7 @@ Usage:
   primer setup ... --agents claude,codex
   primer setup ... --with mcp,rules
   primer setup ... --dry-run
+  primer setup ... --no-bootstrap   (hooks only instruct; never auto install/index)
   primer teardown --global [--purge]
 
 Agents: ${AGENTS.join(', ')}
@@ -196,6 +200,7 @@ function parseArgs(args: string[], mode: 'setup' | 'teardown'): Parsed {
   let agents = AGENTS;
   let dryRun = false;
   let always = false;
+  let noBootstrap = false;
   let purge = false;
   let withRaw: string | null = null;
 
@@ -233,6 +238,8 @@ function parseArgs(args: string[], mode: 'setup' | 'teardown'): Parsed {
       dryRun = true;
     } else if (a === '--always') {
       always = true;
+    } else if (a === '--no-bootstrap') {
+      noBootstrap = true;
     } else if (a === '--purge') {
       purge = true;
     } else {
@@ -253,7 +260,12 @@ function parseArgs(args: string[], mode: 'setup' | 'teardown'): Parsed {
     }
   }
 
-  return { scope, root, agents, bundles, dryRun, always, purge };
+  return { scope, root, agents, bundles, dryRun, always, noBootstrap, purge };
+}
+
+function kimiHome(home: string): string {
+  // Kimi Code's home is relocatable via KIMI_CODE_HOME (default ~/.kimi-code).
+  return process.env.KIMI_CODE_HOME || join(home, '.kimi-code');
 }
 
 function pathsFor(opts: Parsed): Paths {
@@ -280,7 +292,7 @@ function pathsFor(opts: Parsed): Paths {
       geminiSettings: join(opts.root, '.gemini', 'settings.json'),
       antiHooks: join(opts.root, '.agents', 'hooks.json'),
       opencodePluginDir: join(opts.root, '.opencode', 'plugins'),
-      kimiConfig: join(home, '.kimi-code', 'config.toml'),
+      kimiConfig: join(kimiHome(home), 'config.toml'),
     };
   }
   return {
@@ -297,14 +309,14 @@ function pathsFor(opts: Parsed): Paths {
     qoderInstr: null,
     qoderRuleDir: null,
     cursorRuleDir: null,
-    kimiSkillsDir: join(home, '.kimi-code', 'skills'),
+    kimiSkillsDir: join(kimiHome(home), 'skills'),
     claudeSettings: join(home, '.claude', 'settings.json'),
     codexHooks: join(home, '.codex', 'hooks.json'),
     cursorHooks: join(home, '.cursor', 'hooks.json'),
     geminiSettings: join(home, '.gemini', 'settings.json'),
-    antiHooks: join(home, '.gemini', 'antigravity-cli', 'plugins', 'agent-primer', 'hooks.json'),
+    antiHooks: join(home, '.gemini', 'antigravity-cli', 'plugins', 'agent-primer', 'hooks.json'), // legacy: only consulted by teardown
     opencodePluginDir: join(home, '.config', 'opencode', 'plugins'),
-    kimiConfig: join(home, '.kimi-code', 'config.toml'),
+    kimiConfig: join(kimiHome(home), 'config.toml'),
   };
 }
 
@@ -433,7 +445,9 @@ function commandInEntry(entry: any, command: string): boolean {
   return Array.isArray(entry.hooks) && entry.hooks.some((h: any) => h && typeof h === 'object' && h.command === command);
 }
 
-function jsonHook(file: string, kind: 'claude' | 'codex' | 'cursor' | 'gemini' | 'antigravity', command: string, opts: Parsed): void {
+// TIMEOUT_MS applies to gemini entries only (Gemini hook timeouts are MILLISECONDS,
+// default 60000 — the codegraph bootstrap needs more headroom than that on a first run).
+function jsonHook(file: string, kind: 'claude' | 'codex' | 'cursor' | 'gemini', command: string, opts: Parsed, timeoutMs?: number): void {
   if (opts.dryRun) {
     note(`would register ${kind} SessionStart hook in ${file}`);
     return;
@@ -447,12 +461,11 @@ function jsonHook(file: string, kind: 'claude' | 'codex' | 'cursor' | 'gemini' |
   } else {
     const arr = (data.hooks.SessionStart ??= []);
     if (!arr.some((e: any) => commandInEntry(e, command))) {
-      if (kind === 'antigravity') arr.push({ command });
-      else {
-        const entry: Record<string, any> = { hooks: [{ type: 'command', command }] };
-        if (kind === 'gemini') entry.matcher = 'startup';
-        arr.push(entry);
-      }
+      const hook: Record<string, any> = { type: 'command', command };
+      if (kind === 'gemini' && timeoutMs) hook.timeout = timeoutMs;
+      const entry: Record<string, any> = { hooks: [hook] };
+      if (kind === 'gemini') entry.matcher = 'startup';
+      arr.push(entry);
     }
     if (kind === 'gemini') {
       data.hooksConfig ??= {};
@@ -493,8 +506,8 @@ function setGeminiContext(file: string, opts: Parsed): void {
   note(`set context.fileName=[AGENTS.md,GEMINI.md] in ${file}`);
 }
 
-function appendTomlHook(file: string, label: string, command: string, opts: Parsed, extra = ''): void {
-  const block = `\n# ${label}\n[[hooks]]\nevent = "SessionStart"\ncommand = ${JSON.stringify(command)}\ntimeout = 10\n${extra}`;
+function appendTomlHook(file: string, label: string, command: string, opts: Parsed, timeoutSecs = 10): void {
+  const block = `\n# ${label}\n[[hooks]]\nevent = "SessionStart"\ncommand = ${JSON.stringify(command)}\ntimeout = ${timeoutSecs}\n`;
   if (opts.dryRun) {
     note(`would append ${label} hook to ${file}`);
     return;
@@ -565,14 +578,34 @@ function gitignorePrimer(file: string, opts: Parsed): void {
   note(`added .primer/ to ${file}`);
 }
 
+const CODEGRAPH_GITIGNORE_BLOCK = '\n# codegraph: local code-structure index (rebuilt per machine; do not commit)\n.codegraph/\n';
+
+// The per-machine .codegraph/ index must never be committed; codegraph's own
+// .codegraph/.gitignore covers files inside the dir but not the dir itself.
+function gitignoreCodegraph(file: string, opts: Parsed): void {
+  if (opts.dryRun) {
+    note(`would add .codegraph/ to ${file}`);
+    return;
+  }
+  const body = existsSync(file) ? readText(file) : '';
+  if (/^\/?\.codegraph\/?$/m.test(body)) return;
+  writeFileSync(file, `${body}${body && !body.endsWith('\n') ? '\n' : ''}${CODEGRAPH_GITIGNORE_BLOCK}`);
+  note(`added .codegraph/ to ${file}`);
+}
+
 function selected(opts: Parsed, agent: Agent): boolean {
   return opts.agents.includes(agent);
 }
 
-function codegraphHook(format: 'text' | 'json' | 'cursor', opts: Parsed): string {
+function codegraphHookArgs(format: 'text' | 'json' | 'cursor', opts: Parsed): string[] {
   const args = ['codegraph-check', '--format', format];
+  if (!opts.noBootstrap) args.push('--bootstrap');
   if (opts.always) args.push('--always');
-  return primerCommand(args);
+  return args;
+}
+
+function codegraphHook(format: 'text' | 'json' | 'cursor', opts: Parsed): string {
+  return primerCommand(codegraphHookArgs(format, opts));
 }
 
 function primerBrief(format: 'text' | 'json' | 'cursor'): string {
@@ -588,15 +621,17 @@ function wireCoreHooks(opts: Parsed, p: Paths): void {
   if (selected(opts, 'codex')) jsonHook(p.codexHooks, 'codex', codegraphHook('text', opts), opts);
   if (selected(opts, 'cursor')) jsonHook(p.cursorHooks, 'cursor', codegraphHook('cursor', opts), opts);
   if (selected(opts, 'gemini')) {
-    jsonHook(p.geminiSettings, 'gemini', codegraphHook('json', opts), opts);
+    jsonHook(p.geminiSettings, 'gemini', codegraphHook('json', opts), opts, 120_000);
     setGeminiContext(p.geminiSettings, opts);
   }
-  if (selected(opts, 'antigravity')) jsonHook(p.antiHooks, 'antigravity', codegraphHook('text', opts), opts);
+  // antigravity: NO session-start hook event exists — the rules + instruction files carry the policy.
   if (selected(opts, 'opencode')) {
-    putFile(join(p.opencodePluginDir, 'codegraph-session-check.js'), opencodeTemplate('codegraph', ['codegraph-check', '--format', 'text']), opts);
+    putFile(join(p.opencodePluginDir, 'codegraph-session-check.js'), opencodeTemplate('codegraph', codegraphHookArgs('text', opts)), opts);
   }
   if (selected(opts, 'kimi')) {
-    if (opts.scope === 'global') appendTomlHook(p.kimiConfig, 'codegraph-session-startup', codegraphHook('text', opts), opts);
+    // timeout 120, not 10: the first session in a new repo may install + index CodeGraph
+    // (the check's internal budgets keep the normal case far quicker).
+    if (opts.scope === 'global') appendTomlHook(p.kimiConfig, 'codegraph-session-startup', codegraphHook('text', opts), opts, 120);
     else note('Kimi hooks are global-only; wrote the project skill. Run primer setup --global --agents kimi to enable the hook.');
   }
 }
@@ -625,7 +660,7 @@ function wirePrimer(opts: Parsed, p: Paths): void {
   if (selected(opts, 'codex')) jsonHook(p.codexHooks, 'codex', primerBrief('text'), opts);
   if (selected(opts, 'cursor')) jsonHook(p.cursorHooks, 'cursor', primerBrief('cursor'), opts);
   if (selected(opts, 'gemini')) jsonHook(p.geminiSettings, 'gemini', primerBrief('json'), opts);
-  if (selected(opts, 'antigravity')) jsonHook(p.antiHooks, 'antigravity', primerBrief('text'), opts);
+  // antigravity: no session-start hook event exists — the primer policy doc is its carrier.
   if (selected(opts, 'opencode')) putFile(join(p.opencodePluginDir, 'primer-session-check.js'), opencodeTemplate('primer', ['brief', '--format', 'text', '--nudge']), opts);
   if (selected(opts, 'kimi')) {
     if (opts.scope === 'global') {
@@ -650,6 +685,8 @@ export async function runSetup(args: string[]): Promise<void> {
   note(`scope=${opts.scope} target=${p.root} agents=${opts.agents.join(',')} dry-run=${opts.dryRun}`);
 
   copyKit(opts, p);
+  // On a project install the CodeGraph index lands at the repo root — keep it out of VCS.
+  if (opts.scope === 'project') gitignoreCodegraph(join(p.root, '.gitignore'), opts);
   for (const spec of CORE_POLICIES) {
     for (const agent of opts.agents) placePolicy(agent, spec, opts, p);
   }
@@ -766,7 +803,8 @@ function removeAgentFiles(opts: Parsed, p: Paths): void {
   if (selected(opts, 'antigravity')) {
     stripMarkers(p.antiInstr, opts);
     if (p.antiRuleDir) for (const n of STANDALONE_NAMES) rmPath(join(p.antiRuleDir, `${n}.md`), opts);
-    unhookJson(p.antiHooks, [...CORE_HOOK_TAGS, ...PRIMER_HOOK_TAGS], opts);
+    unhookJson(p.antiHooks, [...CORE_HOOK_TAGS, ...PRIMER_HOOK_TAGS], opts); // legacy entries from older installs
+    if (opts.scope === 'global') rmPath(dirname(p.antiHooks), opts); // legacy plugin dir was wholly ours
   }
   if (selected(opts, 'kimi')) {
     for (const n of KIMI_SKILL_NAMES) rmPath(join(p.kimiSkillsDir, n), opts);
@@ -799,14 +837,161 @@ export async function runTeardown(args: string[]): Promise<void> {
   note('teardown done.');
 }
 
+// --- codegraph-check (the SessionStart hook, npm form) ---------------------
+// Mirrors codegraph-session-check.sh exactly. Robustness rules:
+//   * EVERY child process is time-bounded — a hung network call or daemon must never
+//     stall session start past the host's hook timeout (a killed hook emits NOTHING
+//     and the agent flies blind).
+//   * PATH is augmented with the usual user-bin dirs — GUI-launched agents often miss
+//     ~/.local/bin (where the CodeGraph installer links the binary), which otherwise
+//     reads as "not installed" and triggers a pointless reinstall.
+//   * Auto-bootstrap only ever runs inside a git repo that is not $HOME.
+//   * A failed CLI auto-install is not retried for an hour (marker file).
+//   * If indexing outlives its budget it continues DETACHED in the background.
+
+const WIN = process.platform === 'win32';
+const INSTALL_BUDGET_MS = 25_000;
+const REGISTER_BUDGET_MS = 15_000;
+const INDEX_BUDGET_MS = 20_000;
+const INSTALL_RETRY_MS = 60 * 60 * 1000;
+
+// ~/.local/bin (where the CodeGraph installer links the binary) is frequently NOT on
+// the PATH a GUI-launched agent inherits; spawn children with an augmented PATH.
+// (AGENT_PRIMER_NO_PATH_AUGMENT disables this for tests that need a hermetic PATH.)
+function augmentedEnv(): NodeJS.ProcessEnv {
+  if (WIN || process.env.AGENT_PRIMER_NO_PATH_AUGMENT) return process.env;
+  const extra = [join(userHome(), '.local', 'bin'), join(userHome(), 'bin'), '/usr/local/bin', '/opt/homebrew/bin'];
+  const parts = (process.env.PATH ?? '').split(':');
+  for (const d of extra) if (!parts.includes(d) && existsSync(d)) parts.push(d);
+  return { ...process.env, PATH: parts.join(':') };
+}
+
+type RunOutcome = 'ok' | 'timeout' | 'fail';
+
+function outcomeOf(result: ReturnType<typeof spawnSync>): RunOutcome {
+  if (result.status === 0) return 'ok';
+  if (result.error && (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT') return 'timeout';
+  if (result.signal) return 'timeout'; // killed by the timeout's SIGTERM
+  return 'fail';
+}
+
 function commandExists(command: string): boolean {
-  const result = spawnSync(command, ['--version'], { stdio: 'ignore', shell: false });
-  return !result.error;
+  // shell:true on Windows so .cmd/.bat shims (npm installs) resolve; require status 0
+  // because a missing command under cmd.exe exits non-zero without an `error`.
+  const result = spawnSync(command, ['--version'], { stdio: 'ignore', shell: WIN, timeout: 8000, env: augmentedEnv(), windowsHide: true });
+  return !result.error && result.status === 0;
+}
+
+function runShell(command: string, timeoutMs: number): RunOutcome {
+  return outcomeOf(spawnSync(command, { stdio: 'ignore', shell: true, timeout: timeoutMs, env: augmentedEnv(), windowsHide: true }));
+}
+
+function runCodegraph(args: string[], timeoutMs: number, cwd?: string): RunOutcome {
+  return outcomeOf(spawnSync('codegraph', args, { cwd, stdio: 'ignore', shell: WIN, timeout: timeoutMs, env: augmentedEnv(), windowsHide: true }));
 }
 
 function runCodegraphStatus(): string {
-  const result = spawnSync('codegraph', ['status'], { encoding: 'utf8', timeout: 8000 });
+  const result = spawnSync('codegraph', ['status'], { encoding: 'utf8', timeout: 8000, shell: WIN, env: augmentedEnv(), windowsHide: true });
   return `${result.stdout || ''}${result.stderr || ''}`.replace(/\x1B\[[0-9;]*m/g, '').trim();
+}
+
+function stateDir(): string {
+  return process.env.AGENT_PRIMER_STATE_DIR || join(userHome(), '.agent-primer');
+}
+
+function installMarkerPath(): string {
+  return join(stateDir(), 'codegraph-install.last-attempt');
+}
+
+// A failed CLI install is not retried within an hour, so a broken network never adds
+// a curl|sh stall to every session start.
+function installRecentlyAttempted(): boolean {
+  try {
+    return Date.now() - statSync(installMarkerPath()).mtimeMs < INSTALL_RETRY_MS;
+  } catch {
+    return false;
+  }
+}
+
+function markInstallAttempt(): void {
+  try {
+    mkdirSync(stateDir(), { recursive: true });
+    writeFileSync(installMarkerPath(), '');
+  } catch {
+    // best-effort: a read-only HOME just means no backoff
+  }
+}
+
+function clearInstallAttempt(): void {
+  try {
+    rmSync(installMarkerPath(), { force: true });
+  } catch {
+    // best-effort
+  }
+}
+
+// Auto-bootstrap is allowed only in a real project: a git repo that isn't $HOME.
+// (Indexing a home dir or a scratch folder is slow, useless, and surprising.)
+function safeToBootstrap(projectDir: string): boolean {
+  if (!existsSync(join(projectDir, '.git'))) return false;
+  return resolve(projectDir) !== resolve(userHome());
+}
+
+function ensureCodegraphGitignored(projectDir: string): void {
+  try {
+    if (!existsSync(join(projectDir, '.git'))) return;
+    const file = join(projectDir, '.gitignore');
+    const body = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    if (/^\/?\.codegraph\/?$/m.test(body)) return;
+    writeFileSync(file, `${body}${body && !body.endsWith('\n') ? '\n' : ''}${CODEGRAPH_GITIGNORE_BLOCK}`);
+  } catch {
+    // never block the hook on gitignore housekeeping
+  }
+}
+
+// An initialized index = the .codegraph/ dir AND at least one SQLite db file inside it
+// (a bare dir left by an aborted init must not read as "set up").
+function indexInitialized(projectDir: string): boolean {
+  try {
+    const dir = join(projectDir, '.codegraph');
+    if (!existsSync(dir)) return false;
+    return readdirSync(dir).some((f) => f.endsWith('.db'));
+  } catch {
+    return false;
+  }
+}
+
+// A very recent bare .codegraph/ (dir present, no db yet) usually means another
+// session — or a background run this check started earlier — is indexing RIGHT NOW.
+// Don't stack a second indexer on top; a stale bare dir (crashed init) falls through.
+function indexInProgress(projectDir: string): boolean {
+  try {
+    const dir = join(projectDir, '.codegraph');
+    if (!existsSync(dir) || indexInitialized(projectDir)) return false;
+    return Date.now() - statSync(dir).mtimeMs < 10 * 60 * 1000;
+  } catch {
+    return false;
+  }
+}
+
+// Index this project, bounded. A repo too big for the foreground budget keeps indexing
+// DETACHED so the session starts fast and the index is ready shortly after.
+function bootstrapIndex(projectDir: string): 'ok' | 'background' | 'fail' {
+  const r = runCodegraph(['init', '-i'], INDEX_BUDGET_MS, projectDir);
+  if (r === 'ok') {
+    ensureCodegraphGitignored(projectDir);
+    return 'ok';
+  }
+  if (r === 'timeout') {
+    try {
+      spawn('codegraph', ['init', '-i'], { cwd: projectDir, stdio: 'ignore', detached: true, shell: WIN, env: augmentedEnv(), windowsHide: true }).unref();
+    } catch {
+      return 'fail';
+    }
+    ensureCodegraphGitignored(projectDir);
+    return 'background';
+  }
+  return 'fail';
 }
 
 function emitHook(format: string, message: string): void {
@@ -820,16 +1005,96 @@ function emitHook(format: string, message: string): void {
 }
 
 function codegraphInstallText(): string {
-  if (process.platform === 'win32') {
+  if (WIN) {
     return 'irm https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.ps1 | iex';
   }
   return 'curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh';
+}
+
+function runCodegraphInstallScript(): boolean {
+  if (WIN) {
+    return (
+      outcomeOf(
+        spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', codegraphInstallText()], {
+          stdio: 'ignore',
+          shell: false,
+          timeout: INSTALL_BUDGET_MS,
+          windowsHide: true,
+        }),
+      ) === 'ok'
+    );
+  }
+  return runShell(codegraphInstallText(), INSTALL_BUDGET_MS) === 'ok';
+}
+
+// Install the CLI (network) + register the MCP server NON-interactively (`-y`: a bare
+// `codegraph install` opens an interactive agent-picker that hangs without a TTY).
+// Indexing is handled by the caller.
+function bootstrapMissingCli(): boolean {
+  if (!runCodegraphInstallScript()) return false;
+  if (!commandExists('codegraph')) return false;
+  return runCodegraph(['install', '-y'], REGISTER_BUDGET_MS) === 'ok';
+}
+
+function mcpRecoveryHint(projectDir: string): string {
+  return `If a codegraph_* MCP call fails with "No CodeGraph project is loaded", retry it with
+projectPath: "${projectDir}". If it fails with "not initialized", run \`codegraph init -i\` in
+${projectDir} once, then retry.`;
+}
+
+function codegraphBootstrapSuccess(message: string, projectDir: string): string {
+  return `[CodeGraph bootstrap complete]
+${message}
+
+Proceed with the user's original task now. Prefer codegraph_* MCP tools after restart; until then,
+use the \`codegraph\` CLI directly for structural questions (definitions, callers/callees, impact,
+traces, file maps). ${mcpRecoveryHint(projectDir)}`;
+}
+
+function codegraphBootstrapBackground(message: string): string {
+  return `[CodeGraph indexing in background]
+${message}
+
+Proceed with the user's original task now using native tools. Before relying on codegraph_* MCP
+tools or the \`codegraph\` CLI for structural answers, check \`codegraph status\` once — the index
+becomes available as soon as the background run finishes. Do not re-run \`codegraph init\`.`;
+}
+
+function codegraphBootstrapFailure(message: string): string {
+  return `[CodeGraph bootstrap failed]
+${message}
+
+STOP: do not inspect files, analyze project structure, or answer the user's task yet.
+Your next assistant action MUST be to run the setup command(s) below using the host's normal command
+approval UI if needed. Do not ask a yes/no chat question first; the command approval dialog is the
+permission step. If command execution is unavailable or the user declines a command approval, say
+that once and then proceed without CodeGraph.
+
+Commands:
+  ${codegraphInstallText()}
+  codegraph install -y
+  codegraph init -i
+
+After the commands succeed, continue the user's original task immediately using the \`codegraph\`
+CLI. Never append this as an after-the-fact note once the task is already answered.`;
+}
+
+// Softer, non-blocking note for directories we refuse to auto-index (not a git repo,
+// or $HOME itself). No STOP: this may not be a coding session at all.
+function codegraphNonprojectNote(message: string, projectDir: string): string {
+  return `[CodeGraph not set up here]
+${message}
+
+This directory was NOT auto-indexed (it is not a git repository root, or it is the home
+directory). If this session is about code in ${projectDir}, run the command(s) above first via
+the normal command approval UI, then continue. Otherwise just proceed with the user's task.`;
 }
 
 export async function runCodegraphCheck(args: string[]): Promise<void> {
   let format = 'text';
   let project = '';
   let always = false;
+  let bootstrap = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--format') format = args[++i] || 'text';
@@ -837,46 +1102,120 @@ export async function runCodegraphCheck(args: string[]): Promise<void> {
     else if (a === '--project') project = args[++i] || '';
     else if (a.startsWith('--project=')) project = a.slice('--project='.length);
     else if (a === '--always') always = true;
+    else if (a === '--bootstrap') bootstrap = true;
   }
-  const projectDir = resolve(project || process.env.CLAUDE_PROJECT_DIR || process.env.CODEX_PROJECT_DIR || process.cwd());
+  // Claude/Cursor export CLAUDE_PROJECT_DIR; Gemini exports GEMINI_PROJECT_DIR; Cursor
+  // also CURSOR_PROJECT_DIR. Cursor GLOBAL hooks run from ~/.cursor, so the env vars —
+  // not cwd — are what make the global wiring correct there.
+  const projectDir = resolve(
+    project ||
+      process.env.CLAUDE_PROJECT_DIR ||
+      process.env.GEMINI_PROJECT_DIR ||
+      process.env.CURSOR_PROJECT_DIR ||
+      process.env.CODEX_PROJECT_DIR ||
+      process.cwd(),
+  );
+
   if (!commandExists('codegraph')) {
+    if (bootstrap && safeToBootstrap(projectDir) && !installRecentlyAttempted()) {
+      markInstallAttempt();
+      if (bootstrapMissingCli()) {
+        clearInstallAttempt();
+        const idx = bootstrapIndex(projectDir);
+        if (idx === 'ok') {
+          emitHook(format, codegraphBootstrapSuccess(`Installed the CodeGraph CLI, registered its MCP server, and indexed this repo at ${projectDir}.`, projectDir));
+        } else if (idx === 'background') {
+          emitHook(format, codegraphBootstrapBackground(`Installed the CodeGraph CLI and registered its MCP server; indexing of ${projectDir} is still running in the background.`));
+        } else {
+          emitHook(format, codegraphBootstrapFailure(`Installed the CodeGraph CLI, but indexing ${projectDir} failed (only \`codegraph init -i\` still needs to run).`));
+        }
+      } else {
+        emitHook(format, codegraphBootstrapFailure('Automatic install did not complete. The CLI may need a fresh PATH, network access, or a command approval. (Auto-install will not retry for an hour; run the commands below instead.)'));
+      }
+      return;
+    }
+    if (bootstrap && !safeToBootstrap(projectDir)) {
+      emitHook(
+        format,
+        codegraphNonprojectNote(
+          `The \`codegraph\` CLI is NOT installed in this environment. To set it up for a real project, run:
+  ${codegraphInstallText()}
+  codegraph install -y
+  codegraph init -i   (from the project root)`,
+          projectDir,
+        ),
+      );
+      return;
+    }
     emitHook(
       format,
-      `[CodeGraph] The \`codegraph\` CLI is NOT installed in this environment.
-Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
-prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
-command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
-direct yes/no question in chat:
+      `[CodeGraph setup required before task work]
+The \`codegraph\` CLI is NOT installed in this environment.
 
-  CodeGraph is not installed yet. Want me to install it and index this repo now? I will run:
-    ${codegraphInstallText()}
-    codegraph install
-    codegraph init -i
+STOP: do not inspect files, analyze project structure, or answer the user's task yet.
+Your next assistant action MUST be to run these exact setup commands using the host's normal command
+approval UI if needed. Do not ask a yes/no chat question first; the command approval dialog is the
+permission step.
 
-If the user says yes, announce each command, run the three commands, then ask them to RESTART this
-agent/IDE so the codegraph_* MCP tools load. Until restart, use the \`codegraph\` CLI directly.
-If the user says no, proceed without CodeGraph and mention that structural code answers may be weaker.`,
+Commands:
+  ${codegraphInstallText()}
+  codegraph install -y
+  codegraph init -i
+
+After the commands succeed, continue the user's original task immediately using the \`codegraph\`
+CLI. If command execution is unavailable or the user declines a command approval, say that once and
+then proceed without CodeGraph. Never append this as an after-the-fact note once the task is already
+answered.`,
     );
     return;
   }
-  if (!existsSync(join(projectDir, '.codegraph'))) {
+
+  if (!indexInitialized(projectDir)) {
+    if (bootstrap && indexInProgress(projectDir)) {
+      emitHook(format, codegraphBootstrapBackground(`Indexing of ${projectDir} already appears to be in progress (started moments ago by another session or a background run).`));
+      return;
+    }
+    if (bootstrap && safeToBootstrap(projectDir)) {
+      const idx = bootstrapIndex(projectDir);
+      if (idx === 'ok') {
+        emitHook(format, codegraphBootstrapSuccess(`Indexed this repo at ${projectDir}.`, projectDir));
+      } else if (idx === 'background') {
+        emitHook(format, codegraphBootstrapBackground(`Indexing of ${projectDir} is still running in the background.`));
+      } else {
+        emitHook(format, codegraphBootstrapFailure(`Automatic repo indexing did not complete in ${projectDir}.`));
+      }
+      return;
+    }
+    if (bootstrap) {
+      emitHook(
+        format,
+        codegraphNonprojectNote(
+          `The \`codegraph\` CLI is installed, but ${projectDir} is not indexed. To index a real
+project, run \`codegraph init -i\` from its root.`,
+          projectDir,
+        ),
+      );
+      return;
+    }
     emitHook(
       format,
-      `[CodeGraph] CLI present, but this project is NOT initialized (no .codegraph/ at
-${projectDir}).
-Do NOT leave this as a passive note. Before substantive work, ask using the host's structured
-prompt/confirmation dialog when one is available (the same kind of UI used for permissions or
-command approvals, such as a request_user_input or confirm tool). If no such tool exists, ask this
-direct yes/no question in chat:
+      `[CodeGraph setup required before task work]
+The \`codegraph\` CLI is installed, but this project is NOT indexed (no index DB under
+${projectDir}/.codegraph/).
 
-  CodeGraph is installed, but this repo is not indexed yet. Want me to run \`codegraph init -i\` now?
+STOP: do not inspect files, analyze project structure, or answer the user's task yet.
+Your next assistant action MUST be to run exactly \`codegraph init -i\` using the host's normal command
+approval UI if needed. Do not ask a yes/no chat question first; the command approval dialog is the
+permission step.
 
-If the user says yes, announce and run \`codegraph init -i\`. If the codegraph_* MCP tools are
-missing afterwards, run \`codegraph install\` and ask the user to restart this agent/IDE.
-If the user says no, proceed without CodeGraph and mention that structural code answers may be weaker.`,
+After indexing succeeds, continue the user's original task immediately using the \`codegraph\` CLI.
+If command execution is unavailable or the user declines a command approval, say that once and then
+proceed without CodeGraph. Never append this as an after-the-fact note once the task is already
+answered.`,
     );
     return;
   }
+
   if (!always) return;
   emitHook(
     format,
